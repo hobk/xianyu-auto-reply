@@ -25,7 +25,7 @@ class BaseConfig(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", "../.env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -45,7 +45,7 @@ class BaseConfig(BaseSettings):
     mysql_password: str = Field(default="root")
     mysql_database: str = Field(default="xianyu_data")
     sync_driver: str = Field(default="mysql+pymysql")
-    async_driver: str = Field(default="mysql+asyncmy")
+    async_driver: str = Field(default="mysql+aiomysql")
 
     # 数据库连接池配置（账号数量较大时可通过环境变量调优）
     # 重要：db_pool_size + db_max_overflow 不应超过 MySQL 的 max_connections，

@@ -72,7 +72,8 @@ export default defineConfig({
       'localhost',
       '127.0.0.1',
       'xy.zhinianboke.com',
-      'xy-back.zhinianboke.com'
+      'xy-back.zhinianboke.com',
+      'xy-auto.hpop.cn'
     ],
     proxy: {
       // 所有 API 请求统一代理到后端（含WebSocket升级）
