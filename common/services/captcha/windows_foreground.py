@@ -93,6 +93,12 @@ if sys.platform == "win32":
     except AttributeError:
         pass
     _KERNEL32.GetCurrentThreadId.restype = wintypes.DWORD
+    _KERNEL32.GetCurrentProcessId.restype = wintypes.DWORD
+    _KERNEL32.ProcessIdToSessionId.argtypes = [
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _KERNEL32.ProcessIdToSessionId.restype = wintypes.BOOL
 else:
     _USER32 = None
     _KERNEL32 = None
@@ -231,13 +237,61 @@ def activate_window(hwnd: int) -> Tuple[bool, str]:
     return False, f"hwnd={hwnd}, foreground={foreground}"
 
 
+def _current_session_id() -> int:
+    """返回当前进程所在 Windows 会话号；失败返回 -1。"""
+    if sys.platform != "win32" or not _KERNEL32:
+        return -1
+    try:
+        pid = int(_KERNEL32.GetCurrentProcessId())
+        session = wintypes.DWORD(0)
+        if _KERNEL32.ProcessIdToSessionId(pid, ctypes.byref(session)):
+            return int(session.value)
+    except Exception:
+        pass
+    return -1
+
+
+def _find_any_visible_chrome_window() -> Optional[int]:
+    """回退：查找任意可见 Chrome 顶层窗口（同会话内）。"""
+    if not _USER32 or not _WNDENUMPROC:
+        return None
+    matches: List[int] = []
+
+    @_WNDENUMPROC
+    def _enum_window(hwnd: wintypes.HWND, _lparam: wintypes.LPARAM) -> bool:
+        if not _USER32.IsWindowVisible(hwnd):
+            return True
+        class_buffer = ctypes.create_unicode_buffer(256)
+        _USER32.GetClassNameW(hwnd, class_buffer, len(class_buffer))
+        if class_buffer.value == _CHROME_WINDOW_CLASS:
+            title_length = _USER32.GetWindowTextLengthW(hwnd)
+            if title_length <= 0:
+                return True
+            matches.append(_handle_value(hwnd))
+            return False
+        return True
+
+    _USER32.EnumWindows(_enum_window, 0)
+    return matches[0] if matches else None
+
+
 def activate_page_window(
     page: Any,
-    timeout_seconds: float = 2.0,
+    timeout_seconds: float = 3.0,
 ) -> Tuple[bool, Optional[int], str]:
     """精确定位并激活 Playwright 页面所属的 Chrome 顶层窗口。"""
     if sys.platform != "win32":
         return False, None, "not_windows"
+
+    session_id = _current_session_id()
+    if session_id == 0:
+        return (
+            False,
+            None,
+            "service_session0_cannot_control_user_desktop"
+            "（进程在 Session 0/SYSTEM，无法激活用户桌面 Chrome；"
+            "请用交互用户运行 WebSocket：双击 启动全部.bat）",
+        )
 
     marker = (
         f"realmouse-{os.getpid()}-{threading.get_native_id()}-{time.time_ns()}"
@@ -247,7 +301,7 @@ def activate_page_window(
         original_title = page.title()
         page.bring_to_front()
         page.evaluate("marker => { document.title = marker; }", marker)
-        deadline = time.monotonic() + max(0.2, timeout_seconds)
+        deadline = time.monotonic() + max(0.5, timeout_seconds)
         hwnd = None
         while time.monotonic() < deadline:
             hwnd = _find_chrome_window(marker)
@@ -255,7 +309,12 @@ def activate_page_window(
                 break
             time.sleep(0.05)
         if not hwnd:
-            return False, None, "chrome_window_not_found"
+            # 同会话回退：任意可见 Chrome（CDP 真机时标题有时写不进顶层窗口）
+            hwnd = _find_any_visible_chrome_window()
+            if hwnd:
+                success, detail = activate_window(hwnd)
+                return success, hwnd, f"fallback_any_chrome,{detail}"
+            return False, None, f"chrome_window_not_found(session={session_id})"
         success, detail = activate_window(hwnd)
         return success, hwnd, detail
     except Exception as exc:

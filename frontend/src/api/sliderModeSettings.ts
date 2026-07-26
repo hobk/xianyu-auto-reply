@@ -9,7 +9,7 @@ import { put } from '@/utils/request'
 import type { ApiResponse, SliderMode } from '@/types'
 
 const SLIDER_MODE_URL = '/api/v1/system-settings/captcha.slider_mode'
-const SLIDER_MODES: SliderMode[] = ['browser', 'real_mouse']
+const SLIDER_MODES: SliderMode[] = ['browser', 'real_mouse', 'chrome_cdp']
 
 export const normalizeSliderMode = (value: unknown): SliderMode => {
   return SLIDER_MODES.includes(value as SliderMode)

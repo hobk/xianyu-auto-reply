@@ -16,7 +16,10 @@ from loguru import logger
 
 from common.services.captcha.slider_stealth import run_slider_verification, CAPTCHA_NOT_REQUIRED, URL_EXPIRED
 from common.services.captcha.remote_timeout import get_remote_solve_timeout
-from common.services.captcha.slider_mode import is_real_mouse_slider_mode
+from common.services.captcha.slider_mode import (
+    is_real_mouse_slider_mode,
+    is_chrome_cdp_slider_mode,
+)
 from common.services.captcha.drissionpage_slider import (
     run_drissionpage_verification,
     DRISSIONPAGE_AVAILABLE,
@@ -166,7 +169,8 @@ def run_slider_verification_with_fallback(
 
     Returns:
         (是否成功, cookies 字典 | None, 通过引擎 | None)
-        通过引擎取值：'playwright'（主引擎）/ 'drissionpage'（兜底引擎）/ 'real_mouse'（真实鼠标）/ 'remote'（远程接口）/ None（未成功）
+        通过引擎取值：'playwright'（主引擎）/ 'drissionpage'（兜底引擎）/
+        'real_mouse'（真实鼠标）/ 'chrome_cdp'（CDP真机Chrome+真实鼠标）/ 'remote'（远程接口）/ None（未成功）
     """
     # -1. 远程过滑块（可选，由全局配置 remote_config 触发）：
     #     已配置则优先调远程接口求解；超时/网络不可用 → 回退本机逻辑；
@@ -222,12 +226,15 @@ def run_slider_verification_with_fallback(
                 return False, None, f"remote:{reason}"
             # status == 'fallback' → 落到下面的本机逻辑
 
-    # 0. 真实鼠标模式（在系统设置中选择）：
+    # 0. 真实鼠标 / CDP真机Chrome 模式（在系统设置中选择）：
     #    用物理光标回放真人轨迹，成功率高但会占用桌面鼠标，仅限有桌面的 Windows。
-    #    一旦开启且引擎可用：真实鼠标即为唯一引擎——成功返回成功；失败也【直接返回失败、不回退】
-    #    原 CDP/DrissionPage 逻辑（避免低效且会被风控识破的 CDP 滑动；下次重试仍走真实鼠标）。
-    #    仅当“开启了但引擎不可用”（非 Windows / 未装 pyautogui，属误配置）时，才回退原逻辑兜底。
+    #    chrome_cdp：CDP 连接本机已登录 Chrome（真指纹/登录态）+ 物理鼠标（非注入事件）。
+    #    一旦开启且引擎可用：即为唯一引擎——成功返回成功；失败也【直接返回失败、不回退】
+    #    Playwright/DrissionPage（避免低效且会被风控识破的纯 CDP 注入滑动）。
+    #    仅当“开启了但引擎不可用”（非 Windows / 未装 pyautogui）时，才回退原逻辑兜底。
     if is_real_mouse_slider_mode(slider_mode):
+        use_cdp = is_chrome_cdp_slider_mode(slider_mode)
+        engine_name = "chrome_cdp" if use_cdp else "real_mouse"
         real_mouse_available = False
         run_real_mouse_verification = None
         try:
@@ -241,7 +248,10 @@ def run_slider_verification_with_fallback(
             logger.warning(f"【{user_id}】真实鼠标引擎导入失败: {imp_e}")
 
         if real_mouse_available and run_real_mouse_verification is not None:
-            logger.info(f"【{user_id}】启用真实鼠标滑块引擎（失败不回退，重试仍用真实鼠标）")
+            logger.info(
+                f"【{user_id}】启用{'CDP真机Chrome+' if use_cdp else ''}真实鼠标滑块引擎"
+                f"（失败不回退）"
+            )
             try:
                 rm_ok, rm_cookies = run_real_mouse_verification(
                     user_id, url,
@@ -249,22 +259,23 @@ def run_slider_verification_with_fallback(
                     browser_timeout=max(browser_timeout, 40),
                     url_provider=url_provider,
                     weight_class=weight_class,
+                    use_cdp=use_cdp,
                 )
             except Exception as rm_e:
-                logger.warning(f"【{user_id}】真实鼠标引擎执行异常: {rm_e}")
+                logger.warning(f"【{user_id}】{engine_name} 引擎执行异常: {rm_e}")
                 rm_ok, rm_cookies = False, None
             if rm_ok and _has_x5sec(rm_cookies):
-                return True, rm_cookies, "real_mouse"
+                return True, rm_cookies, engine_name
             # 验证链接已过期且无法自助重取：上报 url_expired，供远程调用方刷新URL后重试
             if rm_cookies == URL_EXPIRED:
-                logger.info(f"【{user_id}】真实鼠标引擎检测到验证链接已过期，返回 url_expired")
+                logger.info(f"【{user_id}】{engine_name} 检测到验证链接已过期，返回 url_expired")
                 return False, None, "url_expired"
-            # 按配置：真实鼠标失败不回退原引擎，直接返回失败
-            logger.info(f"【{user_id}】真实鼠标未通过，按配置不回退，返回失败（下次重试仍用真实鼠标）")
+            # 按配置：失败不回退原引擎，直接返回失败
+            logger.info(f"【{user_id}】{engine_name} 未通过，按配置不回退，返回失败")
             return False, None, None
         else:
             logger.error(
-                f"【{user_id}】已选择真实鼠标滑动但引擎不可用"
+                f"【{user_id}】已选择 {engine_name} 但引擎不可用"
                 f"（需 Windows 桌面 + pyautogui），本次回退原有滑块逻辑"
             )
 

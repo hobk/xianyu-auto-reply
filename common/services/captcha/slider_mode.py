@@ -20,10 +20,13 @@ from common.models.system_setting import SystemSetting
 SLIDER_MODE_SETTING_KEY = "captcha.slider_mode"
 SLIDER_MODE_BROWSER = "browser"
 SLIDER_MODE_REAL_MOUSE = "real_mouse"
-SLIDER_MODES = {SLIDER_MODE_BROWSER, SLIDER_MODE_REAL_MOUSE}
+# CDP 连接本机已登录的真实 Chrome + 物理鼠标滑动（推荐 Windows 桌面）
+SLIDER_MODE_CHROME_CDP = "chrome_cdp"
+SLIDER_MODES = {SLIDER_MODE_BROWSER, SLIDER_MODE_REAL_MOUSE, SLIDER_MODE_CHROME_CDP}
 
 _mode_lock = RLock()
-_current_mode = SLIDER_MODE_BROWSER
+# 默认 chrome_cdp（干净配置 + 真鼠标）；DB 刷新会覆盖
+_current_mode = SLIDER_MODE_CHROME_CDP
 
 
 def normalize_slider_mode(value: object) -> str:
@@ -48,9 +51,15 @@ def get_slider_mode() -> str:
 
 
 def is_real_mouse_slider_mode(mode: object | None = None) -> bool:
-    """指定方式或当前缓存是否使用真实鼠标滑动。"""
+    """指定方式或当前缓存是否使用真实鼠标滑动（含独立 Chrome / CDP 真机）。"""
     selected_mode = get_slider_mode() if mode is None else normalize_slider_mode(mode)
-    return selected_mode == SLIDER_MODE_REAL_MOUSE
+    return selected_mode in {SLIDER_MODE_REAL_MOUSE, SLIDER_MODE_CHROME_CDP}
+
+
+def is_chrome_cdp_slider_mode(mode: object | None = None) -> bool:
+    """是否通过 CDP 连接本机真实 Chrome 再配合物理鼠标滑动。"""
+    selected_mode = get_slider_mode() if mode is None else normalize_slider_mode(mode)
+    return selected_mode == SLIDER_MODE_CHROME_CDP
 
 
 async def refresh_slider_mode_from_database() -> str:

@@ -31,6 +31,7 @@ from common.services.token_renewal_cache_service import mark_token_cache_expired
 from common.services.captcha.concurrency import run_browser_task
 from common.services.captcha.slider_mode import (
     SLIDER_MODE_REAL_MOUSE,
+    SLIDER_MODE_CHROME_CDP,
     refresh_slider_mode_from_database,
 )
 from common.services.captcha.token_refetch import request_fresh_captcha_url
@@ -659,16 +660,24 @@ class CookieTokenManager:
                 # 两条路径都不占用 asyncio 默认线程池，避免饿死 aiohttp 的 DNS 解析。
                 # run_slider_verification_with_fallback: 远程(可选)→真人/主引擎(Playwright)→DrissionPage 兜底
                 # 返回 (是否成功, cookies, 通过引擎: remote/real_mouse/playwright/drissionpage/None)
+                # 单次滑块预算：默认 45s（.env CAPTCHA_BROWSER_TIMEOUT），够 2~3 次同页重试
+                try:
+                    from app.core.config import get_settings as _ws_settings
+                    _slider_timeout = int(getattr(_ws_settings(), "captcha_browser_timeout", 45) or 45)
+                except Exception:
+                    _slider_timeout = 45
+                _slider_timeout = max(25, min(_slider_timeout, 90))
                 slider_args = (
-                    f"{self.cookie_id}", verification_url, True, False, 20,
+                    f"{self.cookie_id}", verification_url, True, False, _slider_timeout,
                     self.cookies_str, self._request_captcha_url_sync, remote_config,
                 )
+
                 selected_slider_mode = await refresh_slider_mode_from_database()
                 if (
                     remote_config is None
-                    and selected_slider_mode == SLIDER_MODE_REAL_MOUSE
+                    and selected_slider_mode in {SLIDER_MODE_REAL_MOUSE, SLIDER_MODE_CHROME_CDP}
                 ):
-                    # 本机真实鼠标任务先进入前置本地队列，再提交给原浏览器执行器。
+                    # 本机真实鼠标 / CDP真机 任务先进入前置本地队列，再提交给原浏览器执行器。
                     success, cookies, captcha_engine = await real_mouse_weighted_runner.submit(
                         "local",
                         run_slider_verification_with_fallback,
@@ -728,6 +737,7 @@ class CookieTokenManager:
                             engine_label_map = {
                                 'drissionpage': '兜底引擎(DrissionPage)',
                                 'real_mouse': '真人鼠标引擎(RealMouse)',
+                                'chrome_cdp': 'CDP真机Chrome+鼠标',
                                 'remote': '远程接口(Remote)',
                                 'playwright': '主引擎(Playwright)',
                             }

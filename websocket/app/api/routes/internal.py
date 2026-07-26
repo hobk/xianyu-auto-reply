@@ -18,6 +18,7 @@ from common.services.account_cookie_service import merge_account_cookie_fields
 from common.services.captcha.concurrency import run_browser_task
 from common.services.captcha.slider_mode import (
     SLIDER_MODE_REAL_MOUSE,
+    SLIDER_MODE_CHROME_CDP,
     refresh_slider_mode_from_database,
 )
 from common.services.captcha.weighted_runner import real_mouse_weighted_runner
@@ -682,7 +683,7 @@ async def solve_captcha(request: SolveCaptchaRequest):
             safe_id, url, True, False, timeout, existing_cookies_str, url_provider,
         )
         selected_slider_mode = await refresh_slider_mode_from_database()
-        if selected_slider_mode == SLIDER_MODE_REAL_MOUSE:
+        if selected_slider_mode in {SLIDER_MODE_REAL_MOUSE, SLIDER_MODE_CHROME_CDP}:
             # 被调用方请求在线程池之前参与本地/远程实时加权排队。
             success, cookies, engine = await real_mouse_weighted_runner.submit(
                 weight_class,

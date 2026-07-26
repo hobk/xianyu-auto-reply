@@ -499,6 +499,11 @@ def check_email_code(email: str, code: str, code_type: str = "login") -> tuple[b
 
 # ==================== 过滑块（外部接口，模式B） ====================
 
+# 临时：外部 /captcha/slider-solve 仅接受写死的 secret_key（非用户分销秘钥校验）。
+# 上线/长期对外前请删除或改为配置项。
+_SLIDER_SOLVE_FIXED_SECRET = "1184"
+
+
 @router.post("/slider-solve")
 async def slider_solve(
     request: SliderSolveRequest,
@@ -507,7 +512,7 @@ async def slider_solve(
     """过滑块（供外部系统调用）。
 
     模式B：仅凭传入的 punish 链接求解，本系统不查账号库、不回填 cookies。
-    - 鉴权：必须传入有效的用户秘钥（个人设置中的秘钥），校验存在即放行，并据此记录调用用户。
+    - 鉴权：临时写死 secret_key 必须等于约定值（见 _SLIDER_SOLVE_FIXED_SECRET）。
     - 成功：data = { engine, cookies: { x5sec, ... } }
     - 失败：success=false
     """
@@ -523,15 +528,13 @@ async def slider_solve(
     if not secret_key:
         return ApiResponse(success=False, message="缺少秘钥")
 
-    # 校验秘钥是否存在（个人设置中的用户秘钥），并查出用户名
-    try:
-        result = await db.execute(select(User).where(User.secret_key == secret_key))
-    except Exception as exc:
-        logger.error(f"校验远程过滑块调用秘钥失败: {exc}")
-        return ApiResponse(success=False, message="校验远程过滑块调用秘钥失败，请稍后重试")
-    user = result.scalar_one_or_none()
-    if not user:
+    # 临时：只认写死的密钥 1184，不查用户表分销秘钥
+    if secret_key != _SLIDER_SOLVE_FIXED_SECRET:
+        logger.warning("[slider-solve] 拒绝错误密钥调用")
         return ApiResponse(success=False, message="无效的秘钥")
+
+    # 风控日志需要 call_user 字符串；固定密钥模式下记为 external
+    call_user = "external:1184"
 
     url = (request.url or "").strip()
     if not url:
@@ -552,7 +555,7 @@ async def slider_solve(
                 ) = await admission_service.check_admission_with_redis_log(
                     account_identifier=safe_account_id,
                     url=url,
-                    call_user=user.username,
+                    call_user=call_user,
                 )
             except RemoteCaptchaAdmissionRedisUnavailable as exc:
                 logger.warning(
@@ -572,7 +575,7 @@ async def slider_solve(
         url=url,
         browser_timeout=timeout,
         call_type="remote",
-        call_user=user.username,
+        call_user=call_user,
         cookies=(request.cookies or "").strip(),
         device_id=(request.device_id or "").strip(),
         extended_queue_timeout=True,

@@ -8,6 +8,7 @@ Token管理模块
 4. Token验证
 """
 import asyncio
+import os
 import time
 from loguru import logger
 
@@ -31,15 +32,25 @@ class TokenManager:
         self.last_token_refresh_time = 0
         self.current_token = None
         
-        # Cookie刷新配置
-        self.cookie_refresh_interval = 180  # 3分钟
+        # Cookie刷新配置（可用环境变量缩短周期，提高多账号吞吐）
+        try:
+            self.cookie_refresh_interval = max(
+                60, int(os.getenv("COOKIE_REFRESH_INTERVAL", "120") or 120)
+            )
+        except Exception:
+            self.cookie_refresh_interval = 120
         self.last_cookie_refresh_time = 0
         self.cookie_refresh_lock = asyncio.Lock()
         self.cookie_refresh_enabled = True
         
         # 消息接收标识 - 用于控制Cookie刷新
         self.last_message_received_time = 0
-        self.message_cookie_refresh_cooldown = 300  # 收到消息后5分钟内不执行Cookie刷新
+        try:
+            self.message_cookie_refresh_cooldown = max(
+                60, int(os.getenv("MESSAGE_COOKIE_REFRESH_COOLDOWN", "180") or 180)
+            )
+        except Exception:
+            self.message_cookie_refresh_cooldown = 180
         
         # 扫码登录Cookie刷新标志
         self.last_qr_cookie_refresh_time = 0

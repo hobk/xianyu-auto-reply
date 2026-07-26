@@ -269,9 +269,9 @@ class BrowserSlotManager:
         if self._initialized:
             return
         
-        # 配置
-        self._max_slots = 1  # 默认最大并发数
-        self._wait_timeout = 120  # 默认等待超时（秒）
+        # 配置（默认允许多账号浏览器任务并行；真人鼠标另有全局串行锁）
+        self._max_slots = 4  # 默认最大并发数
+        self._wait_timeout = 90  # 默认等待超时（秒）
         self._config_loaded = False
         
         # 线程安全控制
@@ -308,17 +308,17 @@ class BrowserSlotManager:
             
             if settings:
                 # 使用getattr安全获取配置，避免属性不存在的错误
-                self._max_slots = getattr(settings, 'max_captcha_concurrent', 1)
-                self._wait_timeout = getattr(settings, 'captcha_wait_timeout', 120)
+                self._max_slots = max(1, int(getattr(settings, 'max_captcha_concurrent', 4) or 4))
+                self._wait_timeout = max(30, int(getattr(settings, 'captcha_wait_timeout', 90) or 90))
                 logger.info(f"浏览器槽位配置: 最大并发={self._max_slots}, 超时={self._wait_timeout}秒")
             else:
                 logger.warning("无法获取配置，使用默认值")
-                self._max_slots = 1
-                self._wait_timeout = 120
+                self._max_slots = 4
+                self._wait_timeout = 90
         except Exception as e:
             logger.warning(f"加载配置失败，使用默认值: {e}")
-            self._max_slots = 1
-            self._wait_timeout = 120
+            self._max_slots = 4
+            self._wait_timeout = 90
         
         self._config_loaded = True
     

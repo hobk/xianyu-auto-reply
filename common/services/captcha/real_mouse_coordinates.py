@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import math
+import random
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
@@ -17,6 +19,12 @@ from common.services.captcha.win_input import (
     send_move_abs,
     virtual_screen,
 )
+
+# 校准探测同样会被验证页的 mousemove 监听记录下来。
+# 若用单次 send_move_abs 直接跳到目标点，页面会看到一串上百像素的瞬移，
+# 这本身就是合成输入的强特征，因此探测移动也走插值路径。
+_PROBE_STEP_PX = 22.0
+_PROBE_STEP_MS = 0.008
 
 
 @dataclass
@@ -103,6 +111,39 @@ def compute_slider_distance(frame: Any, button: Any, track: Any) -> float:
     return 0.0
 
 
+def _glide_move_abs(target_x: int, target_y: int) -> None:
+    """以真人节拍插值移动物理光标到目标屏幕点，避免留下瞬移轨迹。
+
+    起点从当前光标位置取；取不到时退化为直接移动。
+    """
+    try:
+        import pyautogui
+
+        start_x, start_y = pyautogui.position()
+    except Exception:
+        send_move_abs(int(target_x), int(target_y))
+        return
+
+    dx = float(target_x) - float(start_x)
+    dy = float(target_y) - float(start_y)
+    distance = math.hypot(dx, dy)
+    steps = int(distance / _PROBE_STEP_PX)
+    if steps <= 1:
+        send_move_abs(int(target_x), int(target_y))
+        return
+    steps = min(steps, 60)
+    for i in range(1, steps):
+        # ease-out：接近目标时减速，与真人指向动作一致
+        t = i / steps
+        eased = 1.0 - (1.0 - t) * (1.0 - t)
+        send_move_abs(
+            int(round(start_x + dx * eased + random.uniform(-0.6, 0.6))),
+            int(round(start_y + dy * eased + random.uniform(-0.6, 0.6))),
+        )
+        time.sleep(_PROBE_STEP_MS)
+    send_move_abs(int(target_x), int(target_y))
+
+
 def _clear_events(page: Any, frame: Any) -> None:
     """清空主页面与滑块 frame 的鼠标校准事件。"""
     for target in (page, frame):
@@ -171,14 +212,28 @@ def calibrate_slider_center(
     source = "none"
     candidate_offset = (0, 0)
 
-    # 初始预测通常已很接近；周边探测用于处理跨屏 DPI 导致的较大固定偏差。
-    offsets = ((0, 0), (-100, 0), (100, 0), (0, -80), (0, 80))
+    # 初始预测通常已很接近；扩大周边探测，覆盖 CDP 真机窗口标题栏/多显示器偏差。
+    offsets = (
+        (0, 0),
+        (-100, 0),
+        (100, 0),
+        (0, -80),
+        (0, 80),
+        (-200, 0),
+        (200, 0),
+        (0, -160),
+        (0, 160),
+        (-150, -100),
+        (150, -100),
+        (-150, 100),
+        (150, 100),
+    )
     for offset_x, offset_y in offsets:
         _clear_events(page, frame)
         candidate = (predicted[0] + offset_x, predicted[1] + offset_y)
-        send_move_abs(candidate[0] - 12, candidate[1] - 8)
+        _glide_move_abs(candidate[0] - 12, candidate[1] - 8)
         time.sleep(0.04)
-        send_move_abs(*candidate)
+        _glide_move_abs(*candidate)
         time.sleep(0.14)
         observation, target_center, source = _read_observation(
             page,
@@ -205,7 +260,7 @@ def calibrate_slider_center(
     corrected = mapper.to_screen(*viewport_center)
 
     _clear_events(page, frame)
-    send_move_abs(*corrected)
+    _glide_move_abs(*corrected)
     time.sleep(0.16)
     verified, verified_target, verified_source = _read_observation(
         page,

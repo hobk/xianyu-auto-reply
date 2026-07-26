@@ -232,7 +232,7 @@ export interface ThemeFontSettings {
 
 export type ThemeSettings = ThemeAppearanceSettings & ThemeFontSettings
 export type PasswordLoginMode = 'protocol' | 'browser'
-export type SliderMode = 'browser' | 'real_mouse'
+export type SliderMode = 'browser' | 'real_mouse' | 'chrome_cdp'
 
 export interface SystemSettings {
   ai_model?: string

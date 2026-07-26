@@ -32,8 +32,10 @@ class WebSocketConfig(BaseConfig):
     # 启动时是否自动连接WebSocket
     auto_start_websocket: bool = Field(default=True, alias="AUTO_START_WEBSOCKET")
     
-    # 浏览器配置
-    max_captcha_concurrent: int = Field(default=3, alias="MAX_CAPTCHA_CONCURRENT")
+    # 浏览器配置（多账号浏览器类任务并发；物理鼠标滑块仍全局串行）
+    max_captcha_concurrent: int = Field(default=4, alias="MAX_CAPTCHA_CONCURRENT")
+    captcha_wait_timeout: int = Field(default=90, alias="CAPTCHA_WAIT_TIMEOUT")
+    captcha_browser_timeout: int = Field(default=45, alias="CAPTCHA_BROWSER_TIMEOUT")
     browser_headless: bool = Field(default=True, alias="BROWSER_HEADLESS")
 
     # DrissionPage 滑块兜底引擎配置
