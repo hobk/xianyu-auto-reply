@@ -2,7 +2,7 @@
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
-pm2 delete backend-web websocket scheduler frontend browser-cdp 2>$null
+pm2 delete backend-web websocket scheduler frontend 2>$null
 pm2 save 2>$null
 # optional: leave browser; kill cdp browsers from pool
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {

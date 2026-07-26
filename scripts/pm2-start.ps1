@@ -60,29 +60,29 @@ if (-not $pm2) {
 }
 
 Write-Host "pm2 delete old apps (if any)..."
-pm2 delete backend-web websocket scheduler frontend browser-cdp 2>$null | Out-Null
+pm2 delete backend-web websocket scheduler frontend 2>$null | Out-Null
 pm2 start (Join-Path $Root "ecosystem.config.cjs")
 pm2 save 2>$null | Out-Null
 pm2 status
 
 Write-Host ""
 Write-Host "waiting for ports..."
+# 不含 9222：过滑块用的 Edge 由 Python 侧按需拉起，启动阶段本来就不该在监听。
 for ($i = 1; $i -le 25; $i++) {
     Start-Sleep -Seconds 2
     $up = 0
-    foreach ($p in 8089, 8090, 8091, 5173, 9222) {
+    foreach ($p in 8089, 8090, 8091, 5173) {
         if (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue) { $up++ }
     }
-    Write-Host "  try $i : $up/5"
-    if ($up -ge 5) { break }
+    Write-Host "  try $i : $up/4"
+    if ($up -ge 4) { break }
 }
 
 foreach ($u in @(
     "http://127.0.0.1:8089/health",
     "http://127.0.0.1:8090/health",
     "http://127.0.0.1:8091/health",
-    "http://127.0.0.1:5173/",
-    "http://127.0.0.1:9222/json/version"
+    "http://127.0.0.1:5173/"
 )) {
     try {
         $code = (Invoke-WebRequest $u -UseBasicParsing -TimeoutSec 8).StatusCode

@@ -79,36 +79,12 @@ module.exports = {
       merge_logs: true,
       time: true,
     },
-    // ── browser-cdp 守护进程已停用，请勿重新启用 ───────────────────────────────
-    // 它每 8s 轮询一次，发现 CDP 端口不通就用 run/captcha_profile_path.txt 里的
-    // 资料目录拉起 Edge。而 Python 侧 chrome_cdp.ensure_cdp_chrome(force_clean=True)
-    // 也会 kill + 重新拉起同一个 user-data-dir 的 Edge（滑块失败轮换资料时同样如此）。
-    // 两边同时管一个浏览器会撞在一起：
-    //   1. Python kill_cdp_chrome() → 端口断开
-    //   2. Python 启动 Edge #A，keeper 同一秒也检测到 down 并启动 Edge #B
-    //   3. 同一个 --user-data-dir 只能有一个实例，后启动的那个把命令行转交给前者
-    //      后立刻退出（表现为「弹出一个浏览器窗口马上就没了」）
-    //   4. 交接期间 9222 能 connect 但不响应 HTTP，Python 的 is_cdp_ready() 连续
-    //      超时约 53s，最终报「Edge 已拉起但 CDP 端口 9222 未在超时内就绪」
-    // 浏览器生命周期统一交给 Python 侧管理（它还需要在滑块失败后轮换资料池）。
-    // 如需手动开一个调试浏览器，用 scripts\start-chrome-cdp.ps1。
-    // {
-    //   name: "browser-cdp",
-    //   cwd: ROOT,
-    //   script: path.join(ROOT, "scripts", "pm2-browser-cdp.js"),
-    //   interpreter: NODE,
-    //   instances: 1,
-    //   autorestart: true,
-    //   max_restarts: 100,
-    //   min_uptime: "8s",
-    //   restart_delay: 4000,
-    //   kill_timeout: 8000,
-    //   watch: false,
-    //   windowsHide: true,
-    //   out_file: path.join(LOG, "browser-cdp-out.log"),
-    //   error_file: path.join(LOG, "browser-cdp-err.log"),
-    //   merge_logs: true,
-    //   time: true,
-    // },
+    // 注意：这里刻意没有「保活 CDP 浏览器」的常驻进程，别再加回来。
+    // 曾经有一个 browser-cdp keeper（每 8s 发现端口不通就拉起 Edge），它会和 Python 侧的
+    // chrome_cdp.ensure_cdp_chrome(force_clean=True) 抢同一个 --user-data-dir：两边几乎
+    // 同时启动 Edge，后启动的那个因单实例机制把命令行转交给前者后立刻退出（表现为
+    // 「弹出一个浏览器窗口马上就没了」），调试端口最终没人绑定。
+    // 浏览器生命周期统一由 Python 侧管理（它还要在滑块失败后轮换资料池）。
+    // 需要手动开一个调试浏览器时用 scripts\start-chrome-cdp.ps1。
   ],
 };
