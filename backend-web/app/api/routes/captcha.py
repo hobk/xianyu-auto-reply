@@ -11,6 +11,7 @@ import re
 import string
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, EmailStr
@@ -547,6 +548,12 @@ async def slider_solve(
     url = (payload.url or "").strip()
     if not url:
         return ApiResponse(success=False, message="punish 链接不能为空")
+
+    parsed_url = urlparse(url)
+    url_host = (parsed_url.hostname or "").lower()
+    if not url_host or (url_host != "goofish.com" and not url_host.endswith(".goofish.com")):
+        logger.warning(f"[slider-solve] 非法url主机 caller_ip={client_ip} url={url}")
+        return ApiResponse(success=False, message="参数非法")
 
     raw_account_id = (payload.account_id or "external").strip()
     safe_account_id = re.sub(r"[^A-Za-z0-9_-]", "", raw_account_id)[:64] or "external"
