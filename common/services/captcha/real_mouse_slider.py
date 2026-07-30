@@ -49,8 +49,10 @@ from common.services.captcha.real_mouse_coordinates import (
 from common.services.captcha.windows_foreground import (
     activate_page_window,
     activate_window,
+    is_foreground_window,
 )
 from common.services.captcha.win_input import (
+    display_state,
     precise_sleep,
     send_button,
     send_move_abs,
@@ -97,9 +99,11 @@ _PREFERRED_BUSINESS_TRAIL = "human_trail_pass_1783943859.json"
 # Existing business samples were collected on the standard 258px NC slider.
 # New samples can override this value with a top-level slider_distance field.
 _LEGACY_BUSINESS_CAPTURE_DISTANCE_PX = 258.0
-# Live replay validation showed that the captured 36-78px tails are stable,
-# while samples with tails of 83px or more consistently reduced pass rate.
-_MAX_BUSINESS_CAPTURE_OVERSHOOT_PX = 80.0
+# 上游按「保留到底后的超出段回放」设计，故用 80px 剔除长尾样本。
+# 本实现改回末点归一（见 _scale_drag_to_distance），超出段根本不会被回放，
+# 这个筛选就失去意义——而且它恰好会把本机通过率最高的三条样本（尾巴 83~138px）全砍掉。
+# 置为 0 表示不按超出段筛样本；样本质量仍由 passed/slide_code 把关。
+_MAX_BUSINESS_CAPTURE_OVERSHOOT_PX = 0.0
 # CAPTCHA_FAST_MODE 默认关闭：过快会抬高 code=300。仅明确设 1 才加速。
 def _fast_mode() -> bool:
     return (os.environ.get("CAPTCHA_FAST_MODE") or "0").strip().lower() in (
@@ -467,7 +471,10 @@ def _load_drags(scene: str = "business") -> List[List[Tuple[float, float, float]
             except (TypeError, ValueError):
                 capture_distance_px = _LEGACY_BUSINESS_CAPTURE_DISTANCE_PX
             capture_overshoot_px = distance - capture_distance_px
-            if capture_overshoot_px > _MAX_BUSINESS_CAPTURE_OVERSHOOT_PX:
+            if (
+                _MAX_BUSINESS_CAPTURE_OVERSHOOT_PX > 0
+                and capture_overshoot_px > _MAX_BUSINESS_CAPTURE_OVERSHOOT_PX
+            ):
                 excessive_overshoot_count += 1
                 continue
         else:
@@ -616,24 +623,39 @@ def _scale_drag_to_distance(
     drag: List[Tuple[float, float, float]],
     distance: float,
 ) -> List[Tuple[float, float, float]]:
-    """按采集滑轨基准映射 X 位移，保留真人到底后的原始超出段。
+    """把真人轨迹的末点归一到当前滑轨终点，不回放「到底后的超出段」。
 
-    只映射 X，不动时间轴、不动 Y —— 录制样本本身就是通过的那一次，原速回放最忠实。
-    （旧实现会把 424ms 的真人轨迹强行拉到 1100~2500ms，实测通过率反而随时长单调下降。）
-    唯一的加工是按真人硬件鼠标节拍重采样补点，见 _resample_to_hardware_cadence。
+    时间轴与 Y 一律保持录制原样——样本本身就是通过的那一次，原速回放最忠实。
+
+    为什么不用上游的「按采集滑轨基准映射、保留超出段」：
+    实测（本机 2026-07-26）两种映射差距悬殊——
+        末点归一（本实现）  74% / 70% / 39%   （三条老样本）
+        保留超出段回放      13% / 11% /  8% / 7%（四条上游样本，n=60）
+    上游据此加了 `_MAX_BUSINESS_CAPTURE_OVERSHOOT_PX=80` 剔除长尾样本，但在本机环境下
+    那恰好把通过率最高的三条样本全过滤掉了。故此处保留末点归一，并不再按超出段筛样本。
     """
-    if not drag or distance <= 0:
+    if not drag or distance <= 0 or drag[-1][0] <= 1:
         return drag
     capture_distance = getattr(drag, "capture_distance_px", None)
-    if capture_distance is None or capture_distance <= 0:
-        capture_distance = _LEGACY_BUSINESS_CAPTURE_DISTANCE_PX
-    factor = distance / capture_distance
+    # 末点归一：以样本自身的末点位移为基准缩放，终点精确贴合当前滑轨终点
+    factor = distance / drag[-1][0]
     points = [(dx * factor, dy, dt) for dx, dy, dt in drag]
 
-    # 唯一的加工：按真人硬件鼠标节拍补点。录制样本相邻事件中位数 6.7~8.0ms（125~150Hz），
+    # 按真人硬件鼠标节拍补点。录制样本相邻事件中位数 6.7~8.0ms（125~150Hz），
     # 而回放若只发原始点数，页面收到的事件密度只有 ~30Hz，与真实硬件差一个数量级。
-    # 线性插值不改变速度曲线，也不影响末点与到底后的超出段。
     points = _resample_to_hardware_cadence(points)
+
+    # 末点精确落到终点，并确保 X 单调不倒退（倒退极易 300）
+    fixed = []
+    last_x = -1e9
+    for i, (dx, dy, dt) in enumerate(points):
+        if i == len(points) - 1:
+            fixed.append((distance, dy, dt))
+        else:
+            x = min(distance - 0.5, max(last_x + 0.05, dx))
+            fixed.append((x, dy, dt))
+            last_x = x
+    points = fixed
 
     # 到位后停顿越久通过率越高（实测 rel=0ms→19.5% / 249ms→40% / 439ms→53.7%），
     # 只抬高过短的停顿，录制值本身够长时原样保留。
@@ -979,10 +1001,9 @@ class _RealMouseSolver:
         if not items:
             return 0
         try:
-            try:
-                self.page.goto("https://www.goofish.com/favicon.ico", wait_until="commit", timeout=8000)
-            except Exception:
-                pass
+            # 不要为了注入 Cookie 先导航到闲鱼域名：items 里每条都带了显式 domain/path，
+            # add_cookies 无需页面处于该域。之前那次 goto 在网络慢时会卡满 8s 超时，
+            # 白白吃掉验证链接的有效期。
             self.context.add_cookies(items)
             return len(raw)
         except Exception as e:
@@ -1414,6 +1435,11 @@ class _RealMouseSolver:
         """激活当前验证 Chrome，并校验物理输入的真实前台归属。"""
         scene_name = "登录滑块" if scene == "login" else "业务滑块"
         try:
+            # 快路径：窗口已在前台就什么都不做。
+            # 本函数一次任务会被调用 6~9 次，而下面的最大化 / bring_to_front /
+            # activate_window 每次都会重排窗口状态，对已经在前台的窗口就是纯闪烁。
+            if self._window_handle and is_foreground_window(self._window_handle):
+                return True
             # CDP/独立 Chrome 都先最大化，减少窗口被挡住
             try:
                 self._maximize_window()
@@ -1514,7 +1540,10 @@ class _RealMouseSolver:
 
             frame = btn = track = None
             poll = 0.15
-            for _ in range(30):
+            # 首次尝试给足首屏渲染时间：goto 超时后页面仍在后台加载，
+            # 只等 4.5s 就判定「未找到滑块」会白白烧掉一次重试（实测浪费 12s）。
+            poll_rounds = 80 if attempt == 1 else 30
+            for _ in range(poll_rounds):
                 if time.time() - start > browser_timeout:
                     break
                 frame, btn, track = self._find_slider()
@@ -2158,6 +2187,21 @@ def run_real_mouse_verification(
     if not REAL_MOUSE_AVAILABLE:
         return False, None
 
+    # 前置检查：没有可用显示器就别滑。
+    # 本机显示器由远程工具虚拟挂载，远程一断开显示器即被摘掉，此时 SendInput 的
+    # 归一化基准、浏览器窗口几何、Chromium 合成/定时器全部失真，滑动必然 code=300。
+    # 硬滑的代价不只是失败：会抬高 _risk_level、并把「环境问题」记成轨迹样本的失败，
+    # 污染 trail_stats。故直接返回失败让上层稍后重试。
+    screen = display_state()
+    if not screen.get("usable"):
+        logger.error(
+            f"【{user_id}】当前无可用显示器，跳过物理鼠标滑块"
+            f"（显示器数={screen.get('monitors')} 虚拟桌面="
+            f"{screen.get('width')}x{screen.get('height')}）。"
+            "远程桌面断开会摘掉虚拟显示器，请保持连接或配置常驻虚拟显示器。"
+        )
+        return False, None
+
     # 按 URL 自动判场景：登录滑块用登录轨迹并强制最大化；业务滑块保持原有行为
     scene = _detect_scene(url)
     drags = _load_drags(scene)
@@ -2176,6 +2220,7 @@ def run_real_mouse_verification(
     logger.info(
         f"【{user_id}】启动滑块引擎: {mode_label} scene={scene} "
         f"risk={risk} fast={_fast_mode()} trails={len(drags)} {pool_info} "
+        f"| 显示器={screen.get('monitors')}@{screen.get('width')}x{screen.get('height')} "
         f"| {trail_stats.describe()}"
     )
 

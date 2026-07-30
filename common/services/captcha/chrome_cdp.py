@@ -419,20 +419,22 @@ def kill_cdp_chrome() -> None:
             break
         time.sleep(0.15)
 
-    # 再等进程真正退出，确保 user-data-dir 的 lockfile 已释放
-    deadline = time.time() + 15.0
+    # 再等进程真正退出，确保 user-data-dir 的 lockfile 已释放。
+    # 上限 6s：实测 taskkill 后 1~2s 内就能退干净，等满 15s 只是在烧验证链接的有效期；
+    # 真退不掉时下游 launch 还有一轮「清理后重试」兜底。
+    deadline = time.time() + 6.0
     remaining = count_cdp_browser_processes()
     while remaining > 0 and time.time() < deadline:
-        time.sleep(0.4)
+        time.sleep(0.25)
         remaining = count_cdp_browser_processes()
     if remaining > 0:
         logger.warning(
-            f"CDP 浏览器进程在 15s 内未完全退出（仍剩 {remaining} 个），"
+            f"CDP 浏览器进程在 6s 内未完全退出（仍剩 {remaining} 个），"
             "新实例可能因资料目录被占用而启动失败"
         )
     else:
         # 给文件系统一点时间落盘释放 lockfile
-        time.sleep(0.4)
+        time.sleep(0.3)
 
 
 def launch_chrome_with_cdp(force: bool = False) -> Tuple[bool, str]:

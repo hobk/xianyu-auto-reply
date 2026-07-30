@@ -12,7 +12,7 @@ import string
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -506,7 +506,8 @@ _SLIDER_SOLVE_FIXED_SECRET = "1184"
 
 @router.post("/slider-solve")
 async def slider_solve(
-    request: SliderSolveRequest,
+    request: Request,
+    payload: SliderSolveRequest,
     db: AsyncSession = Depends(deps.get_db_session),
 ) -> ApiResponse:
     """过滑块（供外部系统调用）。
@@ -517,6 +518,13 @@ async def slider_solve(
     - 失败：success=false
     """
     try:
+        client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
+            request.client.host if request.client else "unknown"
+        )
+        logger.info(
+            f"【外部调用滑块】 caller_ip={client_ip} params={payload.model_dump()}"
+        )
+
         remote_calls_blocked = await _is_remote_slider_blocked(db)
     except Exception as exc:
         logger.error(f"检查远程过滑块禁用配置失败: {exc}")
@@ -524,7 +532,7 @@ async def slider_solve(
     if remote_calls_blocked:
         return ApiResponse(success=False, message="系统已禁止远程过滑块调用")
 
-    secret_key = (request.secret_key or "").strip()
+    secret_key = (payload.secret_key or "").strip()
     if not secret_key:
         return ApiResponse(success=False, message="缺少秘钥")
 
@@ -536,13 +544,13 @@ async def slider_solve(
     # 风控日志需要 call_user 字符串；固定密钥模式下记为 external
     call_user = "external:1184"
 
-    url = (request.url or "").strip()
+    url = (payload.url or "").strip()
     if not url:
         return ApiResponse(success=False, message="punish 链接不能为空")
 
-    raw_account_id = (request.account_id or "external").strip()
+    raw_account_id = (payload.account_id or "external").strip()
     safe_account_id = re.sub(r"[^A-Za-z0-9_-]", "", raw_account_id)[:64] or "external"
-    timeout = max(20, min(int(request.browser_timeout or 40), 120))
+    timeout = max(20, min(int(payload.browser_timeout or 40), 120))
     precreated_log_id = None
     try:
         async with async_session_maker() as admission_db:
@@ -576,8 +584,8 @@ async def slider_solve(
         browser_timeout=timeout,
         call_type="remote",
         call_user=call_user,
-        cookies=(request.cookies or "").strip(),
-        device_id=(request.device_id or "").strip(),
+        cookies=(payload.cookies or "").strip(),
+        device_id=(payload.device_id or "").strip(),
         extended_queue_timeout=True,
         precreated_log_id=precreated_log_id,
     )

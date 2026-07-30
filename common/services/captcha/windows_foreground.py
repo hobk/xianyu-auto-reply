@@ -225,6 +225,12 @@ def activate_window(hwnd: int) -> Tuple[bool, str]:
     if not hwnd or not _USER32.IsWindow(_as_hwnd(hwnd)):
         return False, f"invalid_hwnd={hwnd}"
 
+    # 已经在前台就直接返回。_request_foreground 会做 ShowWindow(RESTORE/MAXIMIZE)
+    # + SetWindowPos(TOPMOST→NOTOPMOST→TOP) + ALT 按键 + SwitchToThisWindow 一整套，
+    # 一次滑块任务里会被调用 6~9 次；对已经在前台的窗口重复执行只会造成可见的反复闪烁。
+    if is_foreground_window(hwnd):
+        return True, f"hwnd={hwnd}, already_foreground"
+
     for send_alt in (False, True):
         _request_foreground(hwnd, send_alt)
         deadline = time.monotonic() + 0.4

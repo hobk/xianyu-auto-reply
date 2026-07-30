@@ -17,6 +17,7 @@ Windows 真实鼠标输入注入（SendInput）+ 高精度定时器
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 import time
 from ctypes import wintypes
@@ -55,6 +56,20 @@ _SM_XVIRTUALSCREEN = 76
 _SM_YVIRTUALSCREEN = 77
 _SM_CXVIRTUALSCREEN = 78
 _SM_CYVIRTUALSCREEN = 79
+_SM_CMONITORS = 80
+# 远程断开后虚拟显示器不会消失，而是掉到 1024x768（Windows 无头会话的经典回退分辨率）。
+# 实测该状态下滑块 0/6 通过，连接状态（1616x996）3/3 通过，相关性完全干净。
+# 因此判定标准不是「有没有显示器」，而是「是不是回退分辨率」。
+# 若你的真实桌面就是 1024x768 或更小，用环境变量下调阈值。
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int((os.environ.get(name) or "").strip() or default)
+    except ValueError:
+        return default
+
+
+_MIN_USABLE_SCREEN_W = _env_int("CAPTCHA_MIN_SCREEN_W", 1025)
+_MIN_USABLE_SCREEN_H = _env_int("CAPTCHA_MIN_SCREEN_H", 769)
 _DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
 
 
@@ -94,6 +109,36 @@ def virtual_screen() -> tuple:
         g(_SM_CXVIRTUALSCREEN),
         g(_SM_CYVIRTUALSCREEN),
     )
+
+
+def display_state() -> dict:
+    """返回当前桌面显示状态，用于判断物理鼠标回放是否具备可用显示器。
+
+    为什么需要：本机的显示器是远程工具挂上来的虚拟显示器。远程一断开，
+    显示器不会消失、而是掉到 1024x768 的回退分辨率 —— 此时 SendInput 绝对坐标的
+    归一化基准（虚拟桌面尺寸）随之改变，浏览器窗口被重排，Chromium 还会降级合成
+    与节流定时器。实测该状态下滑块 0/6 通过，连接状态 3/3 通过。
+    这类失败与轨迹样本无关，必须在滑动前拦掉，否则会污染 trail_stats 并抬高风控等级。
+
+    Returns:
+        {monitors, width, height, left, top, usable}
+        usable=False 表示当前不具备可靠回放条件，调用方应跳过而不是硬滑。
+    """
+    if sys.platform != "win32":
+        return {"monitors": 0, "width": 0, "height": 0, "left": 0, "top": 0, "usable": False}
+    user32 = ctypes.windll.user32
+    monitors = int(user32.GetSystemMetrics(_SM_CMONITORS))
+    left, top, width, height = virtual_screen()
+    # 无显示器，或虚拟桌面塌缩到不足以承载正常浏览器窗口 → 判定不可用
+    usable = monitors >= 1 and width >= _MIN_USABLE_SCREEN_W and height >= _MIN_USABLE_SCREEN_H
+    return {
+        "monitors": monitors,
+        "width": width,
+        "height": height,
+        "left": left,
+        "top": top,
+        "usable": usable,
+    }
 
 
 def send_move_abs(x: int, y: int) -> None:
