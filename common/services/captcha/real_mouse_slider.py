@@ -99,11 +99,17 @@ _PREFERRED_BUSINESS_TRAIL = "human_trail_pass_1783943859.json"
 # Existing business samples were collected on the standard 258px NC slider.
 # New samples can override this value with a top-level slider_distance field.
 _LEGACY_BUSINESS_CAPTURE_DISTANCE_PX = 258.0
+_BROWSER_DEFAULT_TIMEOUT_MS = 6000
+_BROWSER_NAVIGATION_TIMEOUT_MS = 12000
 # 上游按「保留到底后的超出段回放」设计，故用 80px 剔除长尾样本。
 # 本实现改回末点归一（见 _scale_drag_to_distance），超出段根本不会被回放，
 # 这个筛选就失去意义——而且它恰好会把本机通过率最高的三条样本（尾巴 83~138px）全砍掉。
 # 置为 0 表示不按超出段筛样本；样本质量仍由 passed/slide_code 把关。
 _MAX_BUSINESS_CAPTURE_OVERSHOOT_PX = 0.0
+_BROWSER_CRASH_LOG_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "logs", "captcha_browser_crash.jsonl")
+)
+_BROWSER_CRASH_LOG_LOCK = threading.Lock()
 # CAPTCHA_FAST_MODE 默认关闭：过快会抬高 code=300。仅明确设 1 才加速。
 def _fast_mode() -> bool:
     return (os.environ.get("CAPTCHA_FAST_MODE") or "0").strip().lower() in (
@@ -167,6 +173,20 @@ def _reset_risk() -> None:
     with _risk_lock:
         _consecutive_rejects = 0
         _last_reject_at = 0.0
+
+
+def _append_browser_crash_log(record: dict) -> None:
+    """把浏览器崩溃/超时记录追加到独立 JSONL 文件。"""
+    try:
+        os.makedirs(os.path.dirname(_BROWSER_CRASH_LOG_PATH), exist_ok=True)
+        payload = dict(record)
+        payload.setdefault("ts", time.strftime("%Y-%m-%d %H:%M:%S"))
+        line = json.dumps(payload, ensure_ascii=False, default=str)
+        with _BROWSER_CRASH_LOG_LOCK:
+            with open(_BROWSER_CRASH_LOG_PATH, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+    except Exception as exc:
+        logger.warning(f"记录浏览器崩溃日志失败: {exc}")
 
 
 def _business_move_ms_range() -> Tuple[float, float]:
@@ -730,6 +750,7 @@ class _RealMouseSolver:
         self._browser_lock_file = None
         self._slide_code: Optional[int] = None
         self._timed_out = False
+        self._browser_broken_reason: Optional[str] = None
         self._window_handle: Optional[int] = None
         self._owned_captcha_page = False  # CDP 下仅关闭我们创建的验证页
         self._task_cookies_str: str = ""
@@ -758,6 +779,82 @@ class _RealMouseSolver:
             self.context.on("response", _on_resp)
         except Exception:
             pass
+
+    def _mark_browser_broken(self, reason: str) -> None:
+        """标记当前浏览器或页面已经失效。"""
+        if self._browser_broken_reason:
+            return
+        self._browser_broken_reason = str(reason or "browser broken")
+        page_url = ""
+        try:
+            if self.page is not None and not self.page.is_closed():
+                page_url = self.page.url or ""
+        except Exception:
+            page_url = ""
+        _append_browser_crash_log({
+            "event": "browser_broken",
+            "user_id": self.user_id,
+            "pure_id": self.pure_id,
+            "use_cdp": self.use_cdp,
+            "reason": self._browser_broken_reason,
+            "page_url": page_url,
+            "browser_connected": bool(self.browser is not None and getattr(self.browser, "is_connected", lambda: False)()),
+            "timed_out": self._timed_out,
+        })
+        logger.warning(f"【{self.pure_id}】检测到浏览器异常中断: {self._browser_broken_reason}")
+
+    def _attach_lifecycle_listeners(self) -> None:
+        """监听浏览器、上下文和页面崩溃事件。"""
+        if self.browser is not None:
+            try:
+                self.browser.on("disconnected", lambda: self._mark_browser_broken("browser disconnected"))
+            except Exception:
+                pass
+        if self.context is not None:
+            try:
+                self.context.on("close", lambda: self._mark_browser_broken("browser context closed"))
+            except Exception:
+                pass
+        if self.page is not None:
+            try:
+                self.page.on("crash", lambda: self._mark_browser_broken("page crashed"))
+            except Exception:
+                pass
+
+    def _apply_default_timeouts(self) -> None:
+        """给页面和上下文设置统一默认超时，避免异常浏览器把单个操作卡死。"""
+        for target in (self.context, self.page):
+            if target is None:
+                continue
+            try:
+                target.set_default_timeout(_BROWSER_DEFAULT_TIMEOUT_MS)
+            except Exception:
+                pass
+            try:
+                target.set_default_navigation_timeout(_BROWSER_NAVIGATION_TIMEOUT_MS)
+            except Exception:
+                pass
+
+    def _browser_is_healthy(self) -> bool:
+        """检查当前浏览器是否仍可继续承载本次滑块任务。"""
+        if self._timed_out or self._browser_broken_reason:
+            return False
+        try:
+            if self.browser is not None and hasattr(self.browser, "is_connected"):
+                if not self.browser.is_connected():
+                    self._mark_browser_broken("browser disconnected")
+                    return False
+        except Exception as exc:
+            self._mark_browser_broken(f"browser health check failed: {exc}")
+            return False
+        try:
+            if self.page is not None and self.page.is_closed():
+                self._mark_browser_broken("page closed")
+                return False
+        except Exception as exc:
+            self._mark_browser_broken(f"page health check failed: {exc}")
+            return False
+        return True
 
     def _init_cdp_browser(self) -> None:
         """通过 CDP 接入本机干净配置 Chrome（chrome_clean_manual）。"""
@@ -798,11 +895,13 @@ class _RealMouseSolver:
         except Exception as e:
             logger.warning(f"【{self.pure_id}】CDP context 注入最小清理失败（继续）: {e}")
         self._attach_response_listener()
+        self._attach_lifecycle_listeners()
         # 验证页在 prepare_task 中复用/创建；连接后立刻清掉历史堆积标签
         self.page = None
         self._owned_captcha_page = False
         closed = self._prune_extra_pages(keep=None)
         n_pages = len(list(self.context.pages or []))
+        self._browser_broken_reason = None
         logger.info(
             f"【{self.pure_id}】已连接真实 Chrome（CDP），"
             f"标签数={n_pages}（已清理堆积 {closed} 个，不做全量指纹注入）"
@@ -857,6 +956,7 @@ class _RealMouseSolver:
             except Exception:
                 pass
         self.page.bring_to_front()
+        self._browser_broken_reason = None
 
     def _acquire_browser_lock(self) -> None:
         """跨进程独占固定浏览器目录，防止多个服务进程同时启动真人鼠标 Chrome。"""
@@ -1246,6 +1346,8 @@ class _RealMouseSolver:
             self.page.bring_to_front()
         except Exception:
             pass
+        self._attach_lifecycle_listeners()
+        self._apply_default_timeouts()
         try:
             self.page.goto("about:blank", wait_until="domcontentloaded", timeout=4000)
         except Exception:
@@ -1253,6 +1355,7 @@ class _RealMouseSolver:
         # 再 prune 一次，确保 new_page 后无残留
         self._prune_extra_pages(keep=self.page)
         self._clear_site_state_for_captcha()
+        self._browser_broken_reason = None
         logger.info(
             f"【{self.pure_id}】CDP 验证标签就绪，当前标签数="
             f"{len(list(self.context.pages or []))}"
@@ -1266,6 +1369,8 @@ class _RealMouseSolver:
                 old_page.close()
         self.page = new_page
         self._owned_captcha_page = True
+        self._attach_lifecycle_listeners()
+        self._apply_default_timeouts()
         # 先关闭旧页面，避免尾部响应在首次清理后重新写入 Cookie。
         self.context.clear_cookies()
         remaining = self.context.cookies()
@@ -1347,6 +1452,15 @@ class _RealMouseSolver:
         - CDP 真机模式：仅关闭验证标签并断开连接，绝不杀用户 Chrome。
         """
         self._timed_out = True
+        self._mark_browser_broken("timeout")
+        _append_browser_crash_log({
+            "event": "force_kill",
+            "user_id": self.user_id,
+            "pure_id": self.pure_id,
+            "use_cdp": self.use_cdp,
+            "reason": "timeout",
+            "page_url": getattr(self.page, "url", "") if self.page is not None else "",
+        })
         if self.use_cdp:
             try:
                 if self.page is not None and self._owned_captcha_page:
@@ -1491,6 +1605,8 @@ class _RealMouseSolver:
     ) -> Tuple[bool, Optional[Dict[str, str]]]:
         start = time.time()
         self.ensure_browser()
+        if not self._browser_is_healthy():
+            return False, None
         # 登录场景强制最大化（业务场景保持原有窗口行为不变）
         if scene == "login":
             self._maximize_window()
@@ -1528,6 +1644,8 @@ class _RealMouseSolver:
                 return False, URL_EXPIRED
             break
 
+        if not self._browser_is_healthy():
+            return False, None
         self._ensure_window_foreground(scene)
 
         pre_x5 = self._x5sec()
@@ -1535,6 +1653,8 @@ class _RealMouseSolver:
         max_attempts = 3
         remaining_drags = list(drags) if scene == "business" else []
         for attempt in range(1, max_attempts + 1):
+            if not self._browser_is_healthy():
+                break
             if time.time() - start > browser_timeout:
                 break
 
@@ -1819,6 +1939,9 @@ class _RealMouseSolver:
 
     def _wait_result(self, pre_x5: str, start: float, browser_timeout: int) -> Optional[bool]:
         """等待并判定本次滑动结果：True=通过 / False=明确失败(code 300) / None=不明确（可重试）。"""
+        if not self._browser_is_healthy():
+            return None
+
         def _nc_ok() -> bool:
             for fr in self.page.frames:
                 try:
@@ -1833,6 +1956,8 @@ class _RealMouseSolver:
         deadline = min(8.0, max(3.0, browser_timeout - (time.time() - start)))
         waited = 0.0
         while waited < deadline:
+            if not self._browser_is_healthy():
+                return None
             if self._slide_code == 300:
                 logger.warning(f"【{self.pure_id}】滑块接口返回 code=300（风控拒绝）")
                 return False
@@ -2092,14 +2217,44 @@ def _execute_shared_verification(
         # 保留 1 条合成轨迹作为真人样本全部被封时的兜底路径。
         # 它在 _choose_drag 里被额外降权（实测通过率 7.1% vs 真人 20~54%），
         # 只有当真人样本的实测通过率跌到比它还低时，统计权重才会让它顶上来。
+        active_drags = list(drags)
         if scene == "business":
             try:
-                drags = list(drags) + [_synthetic_business_drag(260.0)]
+                active_drags = active_drags + [_synthetic_business_drag(260.0)]
             except Exception:
                 pass
         result = solver.solve(
-            url, drags, browser_timeout, url_provider, scene=scene
+            url, active_drags, browser_timeout, url_provider, scene=scene
         )
+        if solver._browser_broken_reason or solver._timed_out:
+            logger.warning(
+                f"【{user_id}】检测到浏览器崩溃/超时，重启后再试一次: "
+                f"reason={solver._browser_broken_reason or 'timeout'}"
+            )
+            try:
+                solver.close()
+            except Exception:
+                pass
+            try:
+                solver.prepare_task(user_id, url, cookies_str=cookies_str)
+                retry_drags = list(drags)
+                if scene == "business":
+                    try:
+                        retry_drags = retry_drags + [_synthetic_business_drag(260.0)]
+                    except Exception:
+                        pass
+                result = solver.solve(
+                    url, retry_drags, browser_timeout, url_provider, scene=scene
+                )
+            except Exception as retry_exc:
+                _append_browser_crash_log({
+                    "event": "retry_failed",
+                    "user_id": user_id,
+                    "use_cdp": use_cdp,
+                    "scene": scene,
+                    "reason": str(retry_exc),
+                })
+                logger.warning(f"【{user_id}】浏览器重启后重试失败: {retry_exc}")
         # CDP：任务结束归还 blank + 清多余标签（不关浏览器进程，保留单标签复用）
         if use_cdp:
             try:
