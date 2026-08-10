@@ -695,6 +695,11 @@ class XianyuAsync:
                 # 设置消息处理回调
                 from app.services.xianyu.auto_reply_service import AutoReplyService
                 auto_reply_service = AutoReplyService(self.cookie_id, self)
+                # 自动发货与自动回复共用“自动发送消息回流”登记表。
+                # 闲鱼会把卖家侧自动发出的消息再次推送回来；若自动发货模块
+                # 无法访问当前 AutoReplyService，这些回流会被误判为人工发言，
+                # 从而触发会话暂停并漏掉买家紧随其后的消息。
+                self.auto_reply_service = auto_reply_service
                 
                 async def on_chat_message(parsed_message, ws):
                     """处理聊天消息

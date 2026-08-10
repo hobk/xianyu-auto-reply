@@ -188,7 +188,17 @@ class AutoDeliveryHandler:
         return await self.parent.create_session()
     
     async def send_msg(self, websocket, chat_id, send_user_id, content):
-        return await self.parent.send_msg(websocket, chat_id, send_user_id, content)
+        auto_reply_service = getattr(self.parent, "auto_reply_service", None)
+        if auto_reply_service is not None:
+            auto_reply_service._register_auto_sent_message(chat_id, content)
+
+        result = await self.parent.send_msg(websocket, chat_id, send_user_id, content)
+        if (
+            auto_reply_service is not None
+            and (not isinstance(result, dict) or not result.get("success", False))
+        ):
+            auto_reply_service._discard_auto_sent_message(chat_id, content)
+        return result
     
     async def send_image_msg(self, websocket, chat_id, send_user_id, image_url, card_id=None, keyword=None, default_reply_item_id=None, image_index=None):
         return await self.parent.send_image_msg(websocket, chat_id, send_user_id, image_url, card_id=card_id, keyword=keyword, default_reply_item_id=default_reply_item_id, image_index=image_index)
