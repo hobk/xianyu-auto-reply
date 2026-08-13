@@ -19,11 +19,13 @@ import aiohttp
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 from loguru import logger
 
 from common.models.xy_order import XYOrder
 from common.models.xy_catalog_item import XYCatalogItem
 from common.models.auto_reply_message_log import XYAutoReplyMessageLog
+from common.utils.time_utils import get_beijing_now_naive
 
 
 # 复用的 goofish API 连接池（TCPConnector）
@@ -65,6 +67,101 @@ class OrderService:
 
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    @staticmethod
+    def _api_delivery_cache_entry_key(
+        card_id: int | str,
+        delivery_slot: int,
+        api_type: str,
+    ) -> str:
+        """生成单个订单内唯一的 API 卡券结果键。"""
+        return f"{api_type}:{card_id}:{delivery_slot}"
+
+    async def get_api_delivery_result(
+        self,
+        order_no: str,
+        account_id: str,
+        card_id: int | str,
+        delivery_slot: int = 0,
+        api_type: str = "api",
+    ) -> str | None:
+        """读取已经成功取得的 API 卡券原始结果。
+
+        delivery_slot 用于多数量订单：同一订单的第 1、2... 张卡密分别缓存，
+        防止重试时重复调用外部 API，也防止首次发货时多张卡密互相覆盖。
+        """
+        stmt = select(XYOrder).where(
+            XYOrder.order_no == order_no,
+            XYOrder.account_id == account_id,
+        )
+        result = await self.session.execute(stmt)
+        order = result.scalars().first()
+        if not order:
+            return None
+
+        metadata = order.metadata_json or {}
+        entries = metadata.get("api_delivery_results") or {}
+        entry_key = self._api_delivery_cache_entry_key(card_id, delivery_slot, api_type)
+        entry = entries.get(entry_key)
+        if not isinstance(entry, dict):
+            return None
+        content = entry.get("content")
+        return content if isinstance(content, str) and content else None
+
+    async def save_api_delivery_result(
+        self,
+        order_no: str,
+        account_id: str,
+        card_id: int | str,
+        content: str,
+        delivery_slot: int = 0,
+        api_type: str = "api",
+    ) -> str | None:
+        """持久化一次成功的 API 卡券结果，并返回最终保存的内容。
+
+        订单行会加锁；若并发流程已保存同一槽位，保留先保存的内容，确保幂等。
+        API 失败时调用方不会调用本方法，因此失败结果不会进入缓存。
+        """
+        if not content:
+            return None
+
+        try:
+            stmt = (
+                select(XYOrder)
+                .where(
+                    XYOrder.order_no == order_no,
+                    XYOrder.account_id == account_id,
+                )
+                .with_for_update()
+            )
+            result = await self.session.execute(stmt)
+            order = result.scalars().first()
+            if not order:
+                return None
+
+            metadata = dict(order.metadata_json or {})
+            entries = dict(metadata.get("api_delivery_results") or {})
+            entry_key = self._api_delivery_cache_entry_key(card_id, delivery_slot, api_type)
+            existing = entries.get(entry_key)
+            if isinstance(existing, dict) and existing.get("content"):
+                await self.session.rollback()
+                return existing["content"]
+
+            entries[entry_key] = {
+                "content": content,
+                "card_id": str(card_id),
+                "delivery_slot": delivery_slot,
+                "api_type": api_type,
+                "saved_at": get_beijing_now_naive().isoformat(timespec="seconds"),
+            }
+            metadata["api_delivery_results"] = entries
+            order.metadata_json = metadata
+            flag_modified(order, "metadata_json")
+            await self.session.commit()
+            return content
+        except Exception:
+            await self.session.rollback()
+            raise
 
     async def _get_item_titles(self, owner_id: int | None, item_ids: list[str]) -> Dict[str, str]:
         """批量获取商品标题

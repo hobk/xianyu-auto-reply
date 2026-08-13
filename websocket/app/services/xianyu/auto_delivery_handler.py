@@ -34,6 +34,10 @@ from common.utils.response_field import extract_card_api_response_content
 SEND_BEFORE_CONFIRM_WAIT_TIMEOUT = float(os.getenv('SEND_BEFORE_CONFIRM_WAIT_TIMEOUT', '8'))
 
 
+class ApiDeliveryCacheUnavailable(RuntimeError):
+    """无法确认订单是否已有成功 API 结果时，禁止冒险重复调用外部 API。"""
+
+
 class AutoDeliveryHandler:
     """自动发货处理器"""
     
@@ -56,6 +60,9 @@ class AutoDeliveryHandler:
         # - card_type:   text / data / image / api / yifan_api，固定内容类（text/image）需退化为 1 张避免重复发同样内容
         self._last_delivery_card_source = None
         self._last_delivery_card_type = None
+        # API 成功结果先写内存、再持久化到订单 metadata；数据库短暂异常时，
+        # 同一进程内的后续重试仍不会再次消耗外部卡密。
+        self._api_delivery_result_cache = {}
     
     # ==================== 属性代理 ====================
     
@@ -365,6 +372,101 @@ class AutoDeliveryHandler:
         except Exception as e:
             logger.error(f"【{self.cookie_id}】更新订单发货失败原因失败: {self._safe_str(e)}")
 
+    def _api_delivery_cache_key(
+        self, order_id: str, card_id: int | str, delivery_slot: int, api_type: str
+    ) -> tuple[str, str, int, str]:
+        return (str(order_id), str(card_id), int(delivery_slot), api_type)
+
+    async def _load_api_delivery_result(
+        self,
+        order_id: str,
+        card_id: int | str,
+        delivery_slot: int = 0,
+        api_type: str = "api",
+    ) -> str | None:
+        """优先读取已成功获取的卡券 API 结果，避免后续环节失败时重复调用。"""
+        if not order_id:
+            return None
+
+        cache_key = self._api_delivery_cache_key(order_id, card_id, delivery_slot, api_type)
+        memory_value = self._api_delivery_result_cache.get(cache_key)
+        if memory_value:
+            logger.info(
+                f"【{self.cookie_id}】复用内存中的卡券API结果: order_id={order_id}, "
+                f"card_id={card_id}, slot={delivery_slot}, api_type={api_type}"
+            )
+            return memory_value
+
+        try:
+            from common.db.session import async_session_maker
+            from common.services.order_service import OrderService
+
+            async with async_session_maker() as db_session:
+                content = await OrderService(db_session).get_api_delivery_result(
+                    order_no=order_id,
+                    account_id=self.cookie_id,
+                    card_id=card_id,
+                    delivery_slot=delivery_slot,
+                    api_type=api_type,
+                )
+            if content:
+                self._api_delivery_result_cache[cache_key] = content
+                logger.info(
+                    f"【{self.cookie_id}】复用订单已保存的卡券API结果，不再调用外部API: "
+                    f"order_id={order_id}, card_id={card_id}, slot={delivery_slot}, api_type={api_type}"
+                )
+            return content
+        except Exception as e:
+            logger.error(
+                f"【{self.cookie_id}】读取卡券API结果缓存失败，为避免重复扣卡将停止本次发货: "
+                f"order_id={order_id}, card_id={card_id}, slot={delivery_slot}, error={self._safe_str(e)}"
+            )
+            raise ApiDeliveryCacheUnavailable(str(e)) from e
+
+    async def _save_api_delivery_result(
+        self,
+        order_id: str,
+        card_id: int | str,
+        content: str,
+        delivery_slot: int = 0,
+        api_type: str = "api",
+    ) -> str:
+        """API 成功后立刻保存结果；外部 API 失败时不会调用本方法。"""
+        cache_key = self._api_delivery_cache_key(order_id, card_id, delivery_slot, api_type)
+        self._api_delivery_result_cache[cache_key] = content
+
+        try:
+            from common.db.session import async_session_maker
+            from common.services.order_service import OrderService
+
+            async with async_session_maker() as db_session:
+                saved_content = await OrderService(db_session).save_api_delivery_result(
+                    order_no=order_id,
+                    account_id=self.cookie_id,
+                    card_id=card_id,
+                    content=content,
+                    delivery_slot=delivery_slot,
+                    api_type=api_type,
+                )
+            if saved_content:
+                # 并发情况下数据库中先保存的结果优先，内存也必须与其保持一致。
+                self._api_delivery_result_cache[cache_key] = saved_content
+                logger.info(
+                    f"【{self.cookie_id}】卡券API成功结果已保存: order_id={order_id}, "
+                    f"card_id={card_id}, slot={delivery_slot}, api_type={api_type}"
+                )
+                return saved_content
+            logger.warning(
+                f"【{self.cookie_id}】订单不存在，卡券API结果仅保存在当前进程内存: "
+                f"order_id={order_id}, card_id={card_id}, slot={delivery_slot}"
+            )
+        except Exception as e:
+            logger.error(
+                f"【{self.cookie_id}】持久化卡券API成功结果失败，已保留内存缓存: "
+                f"order_id={order_id}, card_id={card_id}, slot={delivery_slot}, error={self._safe_str(e)}"
+            )
+        return content
+
     async def send_delivery_failure_notification(self, send_user_name, send_user_id, item_id, error_message, chat_id):
         """发送发货通知 - 直接调用NotificationManager"""
         try:
@@ -464,6 +566,8 @@ class AutoDeliveryHandler:
                     "delivery_count": len(delivery_contents),
                     "send_success": success_count,
                     "send_fail": fail_count,
+                    "failure_stage": "message_send" if any_send_failed else None,
+                    "api_result_saved": True,
                 },
             }
 
@@ -1249,6 +1353,7 @@ class AutoDeliveryHandler:
                                 item_id, item_title, order_id, send_user_id, chat_id, send_user_name,
                                 skip_confirm=skip_confirm_for_card_only,
                                 allow_shipped_redelivery=allow_shipped_redelivery,
+                                delivery_slot=i,
                             )
                             if delivery_content:
                                 delivery_contents.append(delivery_content)
@@ -1520,7 +1625,7 @@ class AutoDeliveryHandler:
 
                         # 如果有消息发送失败，额外发通知告知（不影响订单状态）
                         if any_send_failed:
-                            fail_notify_msg = "部分发货消息发送失败（WebSocket连接断开），请检查买家是否收到完整内容"
+                            fail_notify_msg = "[消息发送失败] 部分发货消息发送失败，请检查买家是否收到完整内容；已取得的API卡密会复用，不会再次调用卡券API"
                             logger.error(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} {fail_notify_msg}')
                             await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, fail_notify_msg, chat_id)
 
@@ -1642,6 +1747,17 @@ class AutoDeliveryHandler:
                                         logger.warning(
                                             f"【{self.cookie_id}】订单 {order_id} 写入合并失败原因失败: {self._safe_str(_sbc_err)}"
                                         )
+
+                                # 普通模式此前会把消息发送失败与卡券 API 失败混在一起，且订单更新会清空失败原因。
+                                # 这里明确记录发送阶段失败；API 成功结果已经提前持久化，重试只重发消息。
+                                if any_send_failed and not send_before_confirm_fail_msg:
+                                    message_send_fail_reason = (
+                                        "[消息发送失败] 卡券内容已获取并保存，但发送给买家时失败；"
+                                        "后续重试将复用原卡密，不会重复调用卡券API"
+                                    )
+                                    await order_service.update_order_delivery_fail_reason(
+                                        order_id, message_send_fail_reason
+                                    )
                         except Exception as e:
                             logger.error(f"【{self.cookie_id}】更新订单状态失败: {self._safe_str(e)}")
                     else:
@@ -1853,7 +1969,7 @@ class AutoDeliveryHandler:
         cleaned = name.strip().strip('[]【】')
         return cleaned in self._SYSTEM_PLACEHOLDER_NAMES
 
-    async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None, chat_id: str = None, send_user_name: str = None, skip_confirm: bool = False, allow_shipped_redelivery: bool = False):
+    async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None, chat_id: str = None, send_user_name: str = None, skip_confirm: bool = False, allow_shipped_redelivery: bool = False, delivery_slot: int = 0):
         """自动发货功能 - 根据商品ID获取卡券，执行延时，确认发货，发送内容
 
         Args:
@@ -2136,17 +2252,45 @@ class AutoDeliveryHandler:
                 # 根据卡券类型处理发货内容
                 if rule['card_type'] == 'api':
                     # API类型：调用API获取内容，传入订单和商品信息用于动态参数替换
-                    text_content = await self._get_api_card_content(rule, order_id, item_id, send_user_id, spec_name, spec_value, chat_id=chat_id, send_user_name=send_user_name)
+                    try:
+                        text_content = await self._get_api_card_content(
+                            rule, order_id, item_id, send_user_id, spec_name, spec_value,
+                            chat_id=chat_id, send_user_name=send_user_name,
+                            delivery_slot=delivery_slot,
+                        )
+                    except ApiDeliveryCacheUnavailable as cache_error:
+                        self._last_delivery_fail_reason = (
+                            f"[卡券结果缓存失败] 无法确认卡券API是否已成功调用，为避免重复扣卡已停止重试: "
+                            f"卡券ID={rule['card_id']}, error={self._safe_str(cache_error)}"
+                        )
+                        logger.error(self._last_delivery_fail_reason)
+                        return None
                     if text_content is None:
-                        self._last_delivery_fail_reason = f"获取API卡券内容失败: 卡券ID={rule['card_id']}, 名称={rule['card_name']}"
+                        self._last_delivery_fail_reason = f"[卡券API失败] 获取API卡券内容失败: 卡券ID={rule['card_id']}, 名称={rule['card_name']}"
                         logger.warning(self._last_delivery_fail_reason)
                         return None
 
                 elif rule['card_type'] == 'yifan_api':
                     # 亦凡卡劵API类型：调用亦凡API获取内容
-                    text_content = await self._get_yifan_api_card_content(rule, order_id, item_id, send_user_id, chat_id)
+                    try:
+                        text_content = await self._load_api_delivery_result(
+                            order_id, rule['card_id'], delivery_slot, "yifan_api"
+                        )
+                    except ApiDeliveryCacheUnavailable as cache_error:
+                        self._last_delivery_fail_reason = (
+                            f"[卡券结果缓存失败] 无法确认亦凡API是否已成功调用，为避免重复下单已停止重试: "
+                            f"卡券ID={rule['card_id']}, error={self._safe_str(cache_error)}"
+                        )
+                        logger.error(self._last_delivery_fail_reason)
+                        return None
                     if text_content is None:
-                        self._last_delivery_fail_reason = f"获取亦凡API卡券内容失败: 卡券ID={rule['card_id']}, 名称={rule['card_name']}"
+                        text_content = await self._get_yifan_api_card_content(rule, order_id, item_id, send_user_id, chat_id)
+                        if text_content is not None:
+                            text_content = await self._save_api_delivery_result(
+                                order_id, rule['card_id'], text_content, delivery_slot, "yifan_api"
+                            )
+                    if text_content is None:
+                        self._last_delivery_fail_reason = f"[卡券API失败] 获取亦凡API卡券内容失败: 卡券ID={rule['card_id']}, 名称={rule['card_name']}"
                         logger.warning(self._last_delivery_fail_reason)
                         return None
 
@@ -2708,9 +2852,17 @@ class AutoDeliveryHandler:
 
     # ==================== API卡券获取 ====================
 
-    async def _get_api_card_content(self, rule, order_id=None, item_id=None, buyer_id=None, spec_name=None, spec_value=None, retry_count=0, chat_id=None, send_user_name=None):
+    async def _get_api_card_content(self, rule, order_id=None, item_id=None, buyer_id=None, spec_name=None, spec_value=None, retry_count=0, chat_id=None, send_user_name=None, delivery_slot=0):
         """调用API获取卡券内容，支持动态参数替换和重试机制"""
         max_retries = 4
+
+        card_id = rule.get('card_id') or rule.get('id')
+        if retry_count == 0 and order_id and card_id is not None:
+            cached_content = await self._load_api_delivery_result(
+                order_id, card_id, delivery_slot, "api"
+            )
+            if cached_content is not None:
+                return cached_content
 
         if retry_count >= max_retries:
             logger.error(f"API调用失败，已达到最大重试次数({max_retries})")
@@ -2776,6 +2928,10 @@ class AutoDeliveryHandler:
             if status_code == 200:
                 content = extract_card_api_response_content(response_text, response_field)
                 logger.info(f"API调用成功，返回内容长度: {len(content)}")
+                if content and order_id and card_id is not None:
+                    content = await self._save_api_delivery_result(
+                        order_id, card_id, content, delivery_slot, "api"
+                    )
                 return content
             else:
                 logger.warning(f"API调用失败: {status_code} - {response_text[:200]}...")
@@ -2786,7 +2942,7 @@ class AutoDeliveryHandler:
                         wait_time = (retry_count + 1) * 2  # 递增等待时间: 2s, 4s, 6s
                         logger.info(f"等待 {wait_time} 秒后重试...")
                         await asyncio.sleep(wait_time)
-                        return await self._get_api_card_content(rule, order_id, item_id, buyer_id, spec_name, spec_value, retry_count + 1, chat_id=chat_id, send_user_name=send_user_name)
+                        return await self._get_api_card_content(rule, order_id, item_id, buyer_id, spec_name, spec_value, retry_count + 1, chat_id=chat_id, send_user_name=send_user_name, delivery_slot=delivery_slot)
 
                 return None
 
@@ -2798,7 +2954,7 @@ class AutoDeliveryHandler:
                 wait_time = (retry_count + 1) * 2  # 递增等待时间
                 logger.info(f"等待 {wait_time} 秒后重试...")
                 await asyncio.sleep(wait_time)
-                return await self._get_api_card_content(rule, order_id, item_id, buyer_id, spec_name, spec_value, retry_count + 1, chat_id=chat_id, send_user_name=send_user_name)
+                return await self._get_api_card_content(rule, order_id, item_id, buyer_id, spec_name, spec_value, retry_count + 1, chat_id=chat_id, send_user_name=send_user_name, delivery_slot=delivery_slot)
             else:
                 logger.error(f"API调用网络异常，已达到最大重试次数: {self._safe_str(e)}")
                 return None

@@ -1685,7 +1685,8 @@ async def deliver_order(request: DeliverOrderRequest):
                     order_id=request.order_no,
                     item_id=request.item_id,
                     buyer_id=request.buyer_id,
-                    chat_id=request.chat_id
+                    chat_id=request.chat_id,
+                    delivery_slot=i,
                 )
                 if not content:
                     if not raw_contents:
