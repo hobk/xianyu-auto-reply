@@ -89,7 +89,7 @@ export function SliderModeSetting({
       addToast({
         type: 'success',
         message: threshold > 0
-          ? `已设置连续超过${threshold}次滑块失败时通知`
+          ? `已设置连续达到${threshold}次滑块失败时通知`
           : '已关闭连续滑块失败通知',
       })
     } catch (error) {
@@ -133,7 +133,7 @@ export function SliderModeSetting({
         <div className="min-w-0">
           <p className="font-medium text-slate-900 dark:text-slate-100">连续滑块失败通知</p>
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            连续失败超过此次数后，通过当前账号已配置的通知渠道发送一次提醒；0表示不通知。
+            连续失败达到此次数后，通过当前账号已配置的通知渠道发送一次提醒；0表示不通知。
           </p>
         </div>
         <div className="relative shrink-0">

@@ -91,7 +91,7 @@ class NotificationManager:
                 return
 
             state["count"] = int(state.get("count") or 0) + 1
-            if state["notified"] or state["count"] <= threshold:
+            if state["notified"] or state["count"] < threshold:
                 return
 
             state["notified"] = True
