@@ -480,6 +480,15 @@ async def solve_captcha(request: SolveCaptchaRequest):
         except Exception as ue:
             logger.error(f"【过滑块接口】更新风控日志失败: {ue}")
 
+    async def _record_captcha_result(success: bool, detail: str = "") -> None:
+        """记录独立过滑块接口结果，复用账号通知渠道。"""
+        try:
+            from app.services.xianyu.notification_manager import NotificationManager
+
+            await NotificationManager(raw_id).record_captcha_result(success, detail)
+        except Exception as record_e:
+            logger.error(f"【过滑块接口】记录连续滑块结果失败: {record_e}")
+
     def _merged_cookie_string(cookie_updates: dict[str, object] | None) -> str:
         try:
             merged = trans_cookies(existing_cookies_str)
@@ -701,6 +710,7 @@ async def solve_captcha(request: SolveCaptchaRequest):
             )
     except Exception as e:
         logger.error(f"【过滑块接口】account_id={safe_id} 执行异常: {e}")
+        await _record_captcha_result(False, f"过滑块执行异常: {e}")
         _update_log(
             "error",
             f"过滑块执行异常，耗时: {_time.time() - start_ts:.2f}秒",
@@ -781,6 +791,7 @@ async def solve_captcha(request: SolveCaptchaRequest):
             f"远程过滑块成功，耗时: {duration:.2f}秒",
             engine=engine,
         )
+        await _record_captcha_result(True)
         return {
             "success": True, "code": 200, "message": "过滑块成功",
             "data": {
@@ -797,6 +808,7 @@ async def solve_captcha(request: SolveCaptchaRequest):
     # 注意：url_expired 不是"通过引擎"，不写入 captcha_engine 字段（避免污染引擎枚举/前端展示），
     # 过期信息体现在 processing_result 文案与返回体 data 中即可。
     if engine == "url_expired":
+        await _record_captcha_result(False, "验证链接已过期")
         _update_log(
             "failed",
             f"远程过滑块失败(验证链接已过期)，耗时: {duration:.2f}秒",
@@ -806,6 +818,7 @@ async def solve_captcha(request: SolveCaptchaRequest):
             "data": {"engine": engine, "url_expired": True},
             "_risk_log_id": log_id,
         }
+    await _record_captcha_result(False, "过滑块失败")
     _update_log(
         "failed",
         f"远程过滑块失败，耗时: {duration:.2f}秒",
