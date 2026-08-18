@@ -3,15 +3,13 @@ import { useNavigate, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { MessageSquare, User, Lock, Mail, KeyRound, Eye, EyeOff } from 'lucide-react'
 import { AuthNavbar } from '@/components/common/AuthNavbar'
-import { SafeHtml } from '@/components/common/SafeHtml'
-import { getDefaultAuthFooterAdSettings, getDefaultLoginBrandingSettings } from '@/api/settings'
-import { login, verifyToken, getRegistrationStatus, getLoginInfoStatus, generateCaptcha, verifyCaptcha, sendVerificationCode, getLoginCaptchaStatus, getLoginBrandingSettings, getAuthFooterAdSettings } from '@/api/auth'
+import { getDefaultLoginBrandingSettings } from '@/api/settings'
+import { login, verifyToken, getRegistrationStatus, getLoginInfoStatus, generateCaptcha, verifyCaptcha, sendVerificationCode, getLoginCaptchaStatus, getLoginBrandingSettings } from '@/api/auth'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { cn } from '@/utils/cn'
 import { ButtonLoading } from '@/components/common/Loading'
 import { GeetestCaptcha, type GeetestResult } from '@/components/common/GeetestCaptcha'
-import { POPUP_ANNOUNCEMENT_SHOWN_KEY } from '@/components/common/PopupAnnouncementModal'
 
 type LoginType = 'username' | 'email-password' | 'email-code'
 
@@ -27,7 +25,6 @@ export function Login() {
   const [showDefaultLogin, setShowDefaultLogin] = useState(true)
   const [loginCaptchaEnabled, setLoginCaptchaEnabled] = useState<boolean | null>(null)
   const [loginBranding, setLoginBranding] = useState(() => getDefaultLoginBrandingSettings())
-  const [authFooterAd, setAuthFooterAd] = useState(() => getDefaultAuthFooterAdSettings())
 
   // Form states
   const [username, setUsername] = useState('')
@@ -94,9 +91,6 @@ export function Login() {
       .then((result) => setLoginBranding(result))
       .catch(() => {})
 
-    getAuthFooterAdSettings()
-      .then((result) => setAuthFooterAd(result))
-      .catch(() => {})
   }, [])
 
   // Load captcha when switching to email-code
@@ -252,7 +246,6 @@ export function Login() {
 
       if (result.success && result.token && result.refresh_token) {
         // 清除弹窗公告会话标记，确保本次登录后重新弹窗展示一次
-        sessionStorage.removeItem(POPUP_ANNOUNCEMENT_SHOWN_KEY)
         setAuth(result.token, result.refresh_token, {
           user_id: result.user_id!,
           username: result.username!,
@@ -586,10 +579,6 @@ export function Login() {
           </div>
 
           {/* Footer */}
-          <SafeHtml
-            html={authFooterAd['auth.footer_ad_html']}
-            className="mt-6 text-center text-xs text-slate-400 dark:text-slate-500"
-          />
         </motion.div>
       </div>
       </div>

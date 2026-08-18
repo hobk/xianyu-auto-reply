@@ -48,32 +48,11 @@ async def get_public_ads(
 
     仅返回本地已复核且未过期的广告。
     """
-    today = date.today()
-
-    # 查询已复核且未过期的本地广告
-    query = select(Advertisement).where(
-        Advertisement.status == AdStatus.APPROVED,
-        (Advertisement.expire_date >= today) | (Advertisement.expire_date.is_(None))
-    ).order_by(desc(Advertisement.created_at))
-
-    result = await db.execute(query)
-    ads = result.scalars().all()
-
-    carousel_ads = []
-    text_ads = []
-
-    for ad in ads:
-        ad_data = serialize_ad(ad)
-        if ad.ad_type == AdType.CAROUSEL:
-            carousel_ads.append(ad_data)
-        else:
-            text_ads.append(ad_data)
-
     return ApiResponse(
         success=True,
         data={
-            "carousel": carousel_ads,
-            "text": text_ads,
+            "carousel": [],
+            "text": [],
         }
     )
 

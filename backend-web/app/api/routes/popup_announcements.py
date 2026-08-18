@@ -68,23 +68,7 @@ async def get_public_popup_announcements(
 
     仅返回本地启用且未删除的弹窗公告。
     """
-    # 查询本地启用中的弹窗公告（过滤已删除与停用）
-    result = await db.execute(
-        select(PopupAnnouncement)
-        .where(
-            PopupAnnouncement.is_deleted == False,
-            PopupAnnouncement.is_enabled == True,
-        )
-        .order_by(desc(PopupAnnouncement.created_at))
-        .limit(_PUBLIC_POPUP_LIMIT)
-    )
-    announcements = result.scalars().all()
-
-    items = []
-    for item in announcements:
-        items.append(_serialize(item))
-
-    return ApiResponse(success=True, data={"items": items})
+    return ApiResponse(success=True, data={"items": []})
 
 
 @router.get("", response_model=ApiResponse)

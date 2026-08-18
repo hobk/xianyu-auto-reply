@@ -60,20 +60,7 @@ async def get_public_announcements(
 
     仅返回本地最新公告。
     """
-    # 查询本地最新公告（过滤已删除）
-    result = await db.execute(
-        select(Announcement)
-        .where(Announcement.is_deleted == False)
-        .order_by(desc(Announcement.created_at))
-        .limit(_PUBLIC_ANNOUNCEMENT_LIMIT)
-    )
-    announcements = result.scalars().all()
-
-    items = []
-    for ann in announcements:
-        items.append(_serialize_announcement(ann))
-
-    return ApiResponse(success=True, data={"items": items})
+    return ApiResponse(success=True, data={"items": []})
 
 
 @router.get("", response_model=ApiResponse)
