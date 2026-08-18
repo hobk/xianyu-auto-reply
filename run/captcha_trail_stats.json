@@ -1,34 +1,34 @@
 {
   "human_trail_pass_1783949589.json": {
-    "total": 778,
-    "success": 283
+    "total": 918,
+    "success": 410
   },
   "human_trail_pass_1784203585.json": {
-    "total": 559,
-    "success": 126
+    "total": 638,
+    "success": 183
   },
   "human_trail_pass_1784018353.json": {
-    "total": 435,
-    "success": 79
+    "total": 482,
+    "success": 115
   },
   "synthetic": {
-    "total": 73,
-    "success": 9
+    "total": 79,
+    "success": 11
   },
   "human_trail_pass_1783949622.json": {
-    "total": 343,
-    "success": 64
+    "total": 420,
+    "success": 122
   },
   "human_trail_pass_1783943859.json": {
-    "total": 492,
-    "success": 114
+    "total": 556,
+    "success": 169
   },
   "human_trail_pass_1783949718.json": {
-    "total": 781,
-    "success": 327
+    "total": 912,
+    "success": 446
   },
   "human_trail_pass_1783949657.json": {
-    "total": 521,
-    "success": 135
+    "total": 610,
+    "success": 213
   }
 }
