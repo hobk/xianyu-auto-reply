@@ -695,6 +695,12 @@ export function Settings() {
                 onSaved={(mode) => setSettings((current) => (
                   current ? { ...current, 'captcha.slider_mode': mode } : current
                 ))}
+                failureNotifyThreshold={settings?.['captcha.failure_notify_threshold']}
+                onThresholdSaved={(threshold) => setSettings((current) => (
+                  current
+                    ? { ...current, 'captcha.failure_notify_threshold': String(threshold) }
+                    : current
+                ))}
               />
               <div className="flex items-center justify-between py-3 border-t border-slate-100 dark:border-slate-700">
                 <div>

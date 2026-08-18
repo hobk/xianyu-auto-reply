@@ -10,6 +10,8 @@ import type { ApiResponse, SliderMode } from '@/types'
 
 const SLIDER_MODE_URL = '/api/v1/system-settings/captcha.slider_mode'
 const SLIDER_MODES: SliderMode[] = ['browser', 'real_mouse', 'chrome_cdp']
+const CAPTCHA_FAILURE_NOTIFY_THRESHOLD_URL =
+  '/api/v1/system-settings/captcha.failure_notify_threshold'
 
 export const normalizeSliderMode = (value: unknown): SliderMode => {
   return SLIDER_MODES.includes(value as SliderMode)
@@ -19,4 +21,13 @@ export const normalizeSliderMode = (value: unknown): SliderMode => {
 
 export const updateSliderMode = (mode: SliderMode): Promise<ApiResponse> => {
   return put<ApiResponse>(SLIDER_MODE_URL, { value: mode })
+}
+
+export const normalizeCaptchaFailureNotifyThreshold = (value: unknown): number => {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 1000 ? parsed : 0
+}
+
+export const updateCaptchaFailureNotifyThreshold = (value: number): Promise<ApiResponse> => {
+  return put<ApiResponse>(CAPTCHA_FAILURE_NOTIFY_THRESHOLD_URL, { value: String(value) })
 }

@@ -31,6 +31,7 @@ PASSWORD_LOGIN_MODE_KEY = "password_login.mode"
 PASSWORD_LOGIN_MODES = {"protocol", "browser"}
 CAPTCHA_SLIDER_MODE_KEY = "captcha.slider_mode"
 CAPTCHA_SLIDER_MODES = {"browser", "real_mouse", "chrome_cdp"}
+CAPTCHA_FAILURE_NOTIFY_THRESHOLD_KEY = "captcha.failure_notify_threshold"
 
 NON_ADMIN_ALLOWED_KEYS = {
     "disclaimer.title",
@@ -74,6 +75,17 @@ _TRUE_VALUES = {"true", "1", "yes", "on"}
 def _is_truthy(raw_value: str | None) -> bool:
     """把字符串形式的布尔值（'true'/'false'/'1'/'0' 等）统一解析为 bool。"""
     return str(raw_value or "").strip().lower() in _TRUE_VALUES
+
+
+def _parse_captcha_failure_notify_threshold(raw_value: str) -> tuple[int | None, str | None]:
+    """解析连续滑块失败通知阈值，0 表示关闭通知。"""
+    value = str(raw_value or "").strip()
+    if not value.isdigit():
+        return None, "连续滑块失败通知阈值必须为0到1000之间的整数"
+    threshold = int(value)
+    if threshold > 1000:
+        return None, "连续滑块失败通知阈值必须为0到1000之间的整数"
+    return threshold, None
 
 
 async def _validate_proxy_setting(
@@ -231,6 +243,12 @@ async def update_system_setting(
         retention_days, error_message = _parse_log_retention_days(setting_value)
         if error_message:
             return ApiResponse(success=False, message=error_message)
+
+    if key == CAPTCHA_FAILURE_NOTIFY_THRESHOLD_KEY:
+        threshold, error_message = _parse_captcha_failure_notify_threshold(setting_value)
+        if error_message:
+            return ApiResponse(success=False, message=error_message)
+        setting_value = str(threshold)
 
     # 代理设置跨键校验（开启代理必须已配置 URL；代理启用中不允许清空 URL）
     proxy_error = await _validate_proxy_setting(key, setting_value, service)

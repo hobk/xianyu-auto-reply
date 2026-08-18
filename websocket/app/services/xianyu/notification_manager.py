@@ -35,6 +35,7 @@ class NotificationManager:
     # 与 XianyuSliderStealth._send_account_disabled_notification 临时新建实例），
     # 也共享同一份冷却记录，避免短时间内发送多条重复通知。
     _shared_last_notification_time: dict = {}
+    _shared_captcha_failure_state: dict = {}
     
     def __init__(self, cookie_id: str):
         """初始化通知管理器
@@ -51,10 +52,63 @@ class NotificationManager:
         self.notification_cooldown = 300  # 5分钟
         self.token_refresh_notification_cooldown = 10800  # 3小时
         self.notification_lock = asyncio.Lock()
+        self._captcha_failure_state = NotificationManager._shared_captcha_failure_state.setdefault(
+            cookie_id,
+            {"count": 0, "notified": False, "threshold": 0},
+        )
     
     def _safe_str(self, e) -> str:
         """安全地将异常转换为字符串（委托公共实现）"""
         return safe_str(e)
+
+    async def record_captcha_result(self, success: bool, detail: str = "") -> None:
+        """记录账号连续滑块结果，超过阈值后复用账号通知渠道发送一次提醒。"""
+        try:
+            from common.db.compat import db_manager
+
+            raw_threshold = db_manager.get_system_setting(
+                "captcha.failure_notify_threshold",
+                "0",
+            )
+            try:
+                threshold = max(0, min(int(str(raw_threshold or "0").strip()), 1000))
+            except (TypeError, ValueError):
+                threshold = 0
+
+            state = self._captcha_failure_state
+            if state.get("threshold") != threshold:
+                state["threshold"] = threshold
+                state["notified"] = False
+
+            if success:
+                state["count"] = 0
+                state["notified"] = False
+                return
+
+            if threshold <= 0:
+                state["count"] = 0
+                state["notified"] = False
+                return
+
+            state["count"] = int(state.get("count") or 0) + 1
+            if state["notified"] or state["count"] <= threshold:
+                return
+
+            state["notified"] = True
+            count = state["count"]
+            message = (
+                f"连续 {count} 次滑块验证失败\n\n"
+                f"闲鱼账号: {self.cookie_id}\n"
+                f"失败原因: {detail or '滑块验证未通过'}\n"
+                f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                "请检查账号风控状态、浏览器环境和滑块配置。"
+            )
+            await self.send_token_refresh_notification(
+                message,
+                "captcha_failure_threshold",
+            )
+        except Exception as e:
+            logger.error(f"处理连续滑块失败通知失败: {self._safe_str(e)}")
 
     async def send_notification(self, send_user_name: str, send_user_id: str, 
                                send_message: str, item_id: str = None, chat_id: str = None):
@@ -242,6 +296,7 @@ class NotificationManager:
                 "password_login_verification": "⚠️ 需要人脸验证",
                 "captcha_success_auto_update": "✅ 滑块验证成功",
                 "captcha_max_retries_exceeded": "⚠️ 滑块验证失败",
+                "captcha_failure_threshold": "⚠️ 连续滑块失败提醒",
                 "captcha_dependency_missing": "⚠️ 滑块验证模块缺失",
                 "no_credentials": "⚠️ 未配置登录凭据",
                 "token_refresh_failed": "❌ Token刷新失败",

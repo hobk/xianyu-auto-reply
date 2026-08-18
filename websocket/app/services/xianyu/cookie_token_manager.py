@@ -156,6 +156,9 @@ class CookieTokenManager:
             attachment_path=attachment_path,
             verification_url=verification_url
         )
+
+    async def record_captcha_result(self, success: bool, detail: str = ""):
+        return await self.parent.record_captcha_result(success, detail)
     
     async def restart_instance(self, reason=None):
         return await self.parent.restart_instance(reason)
@@ -775,6 +778,10 @@ class CookieTokenManager:
                             f"【{self.cookie_id}】滑块视觉验证通过但未获取到任何 x5 相关 cookie，"
                             f"判定为失败（浏览器返回的 cookies: {list(cookies.keys())}）"
                         )
+                        await self.record_captcha_result(
+                            False,
+                            "滑块视觉通过但未下发 x5 相关 cookie",
+                        )
                         captcha_duration = time.time() - captcha_start_time
                         if log_id:
                             try:
@@ -790,6 +797,8 @@ class CookieTokenManager:
                             except Exception as update_e:
                                 logger.error(f"【{self.cookie_id}】更新风控日志失败: {update_e}")
                         return None
+
+                    await self.record_captcha_result(True)
 
                     for cookie_name, cookie_value in x5sec_cookies.items():
                         if cookie_name in updated_cookies:
@@ -839,6 +848,10 @@ class CookieTokenManager:
                         logger.error(f"【{self.cookie_id}】滑块验证失败: {remote_fail_reason}")
                     else:
                         logger.error(f"【{self.cookie_id}】滑块验证失败")
+                    await self.record_captcha_result(
+                        False,
+                        remote_fail_reason or "滑块验证未通过",
+                    )
                     
                     # 更新风控日志为失败状态
                     captcha_duration = time.time() - captcha_start_time
@@ -869,6 +882,7 @@ class CookieTokenManager:
 
             except ImportError as import_e:
                 logger.error(f"【{self.cookie_id}】滑块验证导入失败: {import_e}")
+                await self.record_captcha_result(False, "滑块验证模块未安装")
                 
                 # 更新风控日志为异常状态
                 if log_id:
@@ -906,6 +920,7 @@ class CookieTokenManager:
 
             except Exception as stealth_e:
                 logger.error(f"【{self.cookie_id}】滑块验证异常: {self._safe_str(stealth_e)}")
+                await self.record_captcha_result(False, self._safe_str(stealth_e))
                 
                 # 更新风控日志为异常状态
                 captcha_duration = time.time() - captcha_start_time

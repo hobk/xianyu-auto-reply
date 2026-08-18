@@ -505,6 +505,18 @@ class XianyuAsync:
                 )
         except Exception as e:
             logger.error(f"【{self.cookie_id}】发送Token刷新通知失败: {self._safe_str(e)}")
+
+    async def record_captcha_result(self, success: bool, detail: str = ""):
+        """记录连续滑块结果，并按系统阈值触发通知。"""
+        try:
+            if hasattr(self, '_notification_manager') and self._notification_manager:
+                return await self._notification_manager.record_captcha_result(success, detail)
+
+            from app.services.xianyu.notification_manager import NotificationManager
+            notification_manager = NotificationManager(self.cookie_id)
+            return await notification_manager.record_captcha_result(success, detail)
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】记录连续滑块结果失败: {self._safe_str(e)}")
     
     async def restart_instance(self, reason: str = None):
         """重启实例的公开方法（供 CookieTokenManager 调用）

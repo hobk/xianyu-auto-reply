@@ -283,6 +283,7 @@ export interface SystemSettings {
   // 账号密码登录方式
   'password_login.mode'?: PasswordLoginMode
   'captcha.slider_mode'?: SliderMode
+  'captcha.failure_notify_threshold'?: string
   'delivery.manual_redelivery_cooldown_seconds'?: string
   'delivery.manual_redelivery_lock_seconds'?: string
   // 代理设置

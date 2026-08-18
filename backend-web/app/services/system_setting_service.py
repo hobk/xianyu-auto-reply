@@ -73,6 +73,7 @@ DEFAULT_SYSTEM_SETTINGS: dict[str, tuple[str, str | None]] = {
     "captcha.remote_cooldown_seconds": ("600", "远程调用达到处理中上限后的冷却秒数，0=不冷却"),
     "captcha.remote_cooldown_until": ("0", "远程过滑块调用冷却截止时间戳"),
     "captcha.slider_mode": ("browser", "滑块滑动方式：browser/real_mouse/chrome_cdp"),
+    "captcha.failure_notify_threshold": ("0", "连续滑块失败通知阈值，0=不通知"),
     # 账号密码登录模式：protocol-协议登录 / browser-浏览器登录
     "password_login.mode": ("browser", "账号密码登录模式：protocol/browser"),
 }
@@ -130,6 +131,7 @@ NO_ESCAPE_KEYS = {
     "captcha.remote_cooldown_seconds",
     "captcha.remote_cooldown_until",
     "captcha.slider_mode",
+    "captcha.failure_notify_threshold",
     # real_mouse 排队权重：数字字符串，无需 XSS 转义
     "captcha.real_mouse_weight_local",
     "captcha.real_mouse_weight_remote",

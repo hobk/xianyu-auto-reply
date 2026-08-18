@@ -180,6 +180,11 @@ class DatabaseInitializer:
             "滑块滑动方式：browser/real_mouse",
         ),
         (
+            "captcha.failure_notify_threshold",
+            "0",
+            "连续滑块失败通知阈值，0=不通知",
+        ),
+        (
             "captcha.remote_processing_max",
             "20",
             "远程调用允许的最大处理中滑块日志数，0=不限制",
