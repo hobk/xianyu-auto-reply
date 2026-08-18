@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Header
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,11 +23,6 @@ from common.schemas.common import ApiResponse
 from common.utils.text_utils import escape_xss
 from common.utils.time_utils import safe_isoformat
 from common.utils.pagination import execute_paginated_with_filters
-from app.services.remote_content_service import (
-    fetch_remote_public_popup_announcements,
-    is_remote_fetch_request,
-)
-
 router = APIRouter(tags=["popup_announcements"])
 
 # 登录弹窗展示的最大条数
@@ -66,15 +61,12 @@ def _serialize(item: PopupAnnouncement) -> dict:
 
 @router.get("/public", response_model=ApiResponse)
 async def get_public_popup_announcements(
-    user_agent: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db_session),
 ):
     """
     获取启用中的弹窗公告（公开接口，用于用户登录后弹窗展示）
 
-    返回内容 = 本地启用且未删除的弹窗公告 + 远程官方服务器的公开弹窗公告（与桌面版同源），
-    远程弹窗公告以 source=remote 标记、ID 取负，避免与本地数据冲突。
-    远程拉取失败时静默降级，仅返回本地弹窗公告。
+    仅返回本地启用且未删除的弹窗公告。
     """
     # 查询本地启用中的弹窗公告（过滤已删除与停用）
     result = await db.execute(
@@ -89,17 +81,8 @@ async def get_public_popup_announcements(
     announcements = result.scalars().all()
 
     items = []
-    # 本地去重键（标题, 内容），用于过滤远程重复弹窗公告
-    dedup_keys: set[tuple[str | None, str | None]] = set()
     for item in announcements:
         items.append(_serialize(item))
-        dedup_keys.add((item.title, item.content))
-
-    # 合并远程官方弹窗公告（失败时返回空，不影响本地展示）；
-    # 若请求本身来自服务器间远程拉取，则不再二次拉取，避免递归自调用
-    if not is_remote_fetch_request(user_agent):
-        remote_items = await fetch_remote_public_popup_announcements(local_dedup_keys=dedup_keys)
-        items.extend(remote_items)
 
     return ApiResponse(success=True, data={"items": items})
 
