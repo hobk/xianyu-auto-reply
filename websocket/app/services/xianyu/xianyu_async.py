@@ -975,6 +975,25 @@ class XianyuAsync:
                     
                     # 处理订单状态（获取订单详情）
                     await self._process_order_status(raw_message, send_message, item_id, send_user_id, msg_time)
+
+                    # 退款类卡片更新常先推送“我发起了退款申请”，随后同批/紧邻推送
+                    # “退款成功，钱款已原路退返”。中间态只用于同步订单状态，避免发出误导通知。
+                    refund_text_norm = str(send_message or "").strip().strip("[]")
+                    if (
+                        refund_text_norm in {'我发起了退款申请', '买家申请退款'}
+                        or '退款成功' in refund_text_norm
+                        or '钱款已原路退返' in refund_text_norm
+                    ):
+                        await self._process_refund_status(
+                            raw_message, send_message, item_id, send_user_id,
+                            parsed_message.get("chat_id", ""),
+                        )
+                        logger.info(f"【{self.cookie_id}】退款类卡片更新已处理，跳过自动回复/通知: {send_message}")
+                        return
+
+                    if refund_text_norm == '你已发货':
+                        logger.info(f"【{self.cookie_id}】发货状态卡片更新跳过自动回复/通知: {send_message}")
+                        return
                     
                     # 检查是否是自动发货触发消息
                     if auto_reply_service.is_auto_delivery_trigger(send_message):
@@ -1294,11 +1313,11 @@ class XianyuAsync:
             logger.error(f"【{self.cookie_id}】处理订单状态失败: {e}")
 
     async def _process_refund_status(self, message: dict, send_message: str, item_id: str, buyer_id: str, chat_id: str) -> None:
-        """收到退款卡片消息时，将对应订单状态更新为退款中（refunding）
+        """收到退款卡片消息时，同步对应订单的退款状态。
 
-        触发文案：[我发起了退款申请]（买家发起退款时的 dxCard 卡片消息）
-        - 订单已存在：更新状态为 refunding（create_order_from_message 内部防回退逻辑不拦截 refunding）
-        - 订单不存在：先建档为 refunding，再异步拉取订单详情补全规格/收货人等信息
+        - 退款申请：更新为 refunding
+        - 退款成功/钱款退返：更新为 refunded
+        - 订单不存在：先建档，再异步拉取订单详情补全规格/收货人等信息
 
         注意：本方法只负责改状态，不中断后续自动回复流程（按需求保持退款消息仍可触发自动回复）。
 
@@ -1309,19 +1328,27 @@ class XianyuAsync:
             buyer_id: 买家ID
             chat_id: 聊天会话ID
         """
-        # 退款触发文案（便于未来扩展其他退款卡片文案）
-        refund_trigger_messages = ['[我发起了退款申请]']
-        if send_message not in refund_trigger_messages:
+        refund_text = str(send_message or "").strip()
+        refund_text_norm = refund_text.strip("[]")
+        refund_applied_messages = {'我发起了退款申请', '买家申请退款'}
+        refund_success_keywords = ('退款成功', '钱款已原路退返')
+
+        if refund_text_norm in refund_applied_messages:
+            target_status = 'refunding'
+            should_unregister = True
+        elif any(keyword in refund_text_norm for keyword in refund_success_keywords):
+            target_status = 'refunded'
+            should_unregister = False
+        else:
             return
 
         try:
             # 复用现有提取逻辑：从 dxCard 按钮 targetUrl 正则提取 orderId
             order_id = self._extract_order_id(message)
             if not order_id:
-                logger.warning(f"【{self.cookie_id}】收到退款申请消息但无法提取订单ID: {send_message}")
+                logger.warning(f"【{self.cookie_id}】收到退款消息但无法提取订单ID: {send_message}")
                 return
 
-            from common.services.order_service import OrderService
             from common.models.xy_order import XYOrder
             from common.db.session import async_session_maker
             from sqlalchemy import select
@@ -1342,45 +1369,44 @@ class XianyuAsync:
                 if existing:
                     order_existed = True
                     # 状态更新（防回退，不中断后续注销/拉详情逻辑）
-                    if existing.status in non_overridable_statuses:
+                    if target_status == 'refunding' and existing.status in non_overridable_statuses:
                         logger.info(
                             f"【{self.cookie_id}】订单 {order_id} 当前状态 {existing.status} 属终态，"
                             f"不回退为退款中"
                         )
-                    elif existing.status == 'refunding':
-                        logger.info(f"【{self.cookie_id}】订单 {order_id} 已是退款中，状态无需更新")
+                    elif existing.status == target_status:
+                        logger.info(f"【{self.cookie_id}】订单 {order_id} 已是 {target_status}，状态无需更新")
                     else:
-                        # 非终态 → 更新为退款中
-                        order_service = OrderService(session)
-                        updated = await order_service.update_order_status(order_id, 'refunding')
-                        if updated:
-                            logger.info(
-                                f"【{self.cookie_id}】✅ 收到退款申请，订单 {order_id} 状态 "
-                                f"{existing.status} → 退款中(refunding)"
-                            )
-                        else:
-                            logger.warning(f"【{self.cookie_id}】订单 {order_id} 退款状态更新未生效")
+                        old_status = existing.status
+                        existing.status = target_status
+                        await session.commit()
+                        logger.info(
+                            f"【{self.cookie_id}】✅ 收到退款消息({refund_text})，订单 {order_id} 状态 "
+                            f"{old_status} → {target_status}"
+                        )
                 else:
-                    # 订单本地不存在 → 建档为退款中
+                    # 订单本地不存在 → 建档为退款状态
                     # 注意：不传 item_id —— create_order_from_message 创建分支不做商品归属校验，
                     #       item_id 由后续异步详情拉取补全（无归属校验）。
+                    from common.services.order_service import OrderService
                     order_service = OrderService(session)
                     await order_service.create_order_from_message(
                         order_no=order_id,
                         account_id=self.cookie_id,
-                        status='refunding',
+                        status=target_status,
                         buyer_id=buyer_id,
                         chat_id=chat_id,
                     )
                     logger.info(
-                        f"【{self.cookie_id}】✅ 收到退款申请，订单 {order_id} 本地不存在，"
-                        f"已建档为退款中(refunding)"
+                        f"【{self.cookie_id}】✅ 收到退款消息({refund_text})，订单 {order_id} 本地不存在，"
+                        f"已建档为 {target_status}"
                     )
 
-            # 触发退款订单注销（统一逻辑，与定时任务共用）：
-            # 内部判断账号开关、发货内容为空标记、已注销跳过，不阻塞主流程
-            from common.services.refund_cancel_service import process_order_unregister
-            asyncio.create_task(process_order_unregister(self.cookie_id, order_id))
+            if should_unregister:
+                # 触发退款订单注销（统一逻辑，与定时任务共用）：
+                # 内部判断账号开关、发货内容为空标记、已注销跳过，不阻塞主流程
+                from common.services.refund_cancel_service import process_order_unregister
+                asyncio.create_task(process_order_unregister(self.cookie_id, order_id))
 
             # 订单原本不存在 → 异步拉取订单详情补全（规格/收货人/金额等，不会覆盖 status）
             if not order_existed:

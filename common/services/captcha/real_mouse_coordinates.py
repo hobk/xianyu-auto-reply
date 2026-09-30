@@ -259,6 +259,8 @@ def calibrate_slider_center(
     mapper.correction_y += candidate_offset[1] + error_y * mapper.dpr
     corrected = mapper.to_screen(*viewport_center)
 
+    # Even when correction rounds to zero, force a fresh final movement.
+    _glide_move_abs(corrected[0] - 6, corrected[1] - 4)
     _clear_events(page, frame)
     _glide_move_abs(*corrected)
     time.sleep(0.16)
@@ -269,9 +271,12 @@ def calibrate_slider_center(
         viewport_center,
     )
     if not verified:
-        verified = observation
-        verified_target = target_center
-        verified_source = source
+        return False, {
+            "error": "no_fresh_mouse_event_after_correction",
+            "viewport_center": viewport_center,
+            "predicted_screen": predicted,
+            "corrected_screen": corrected,
+        }
     verified_error = (
         verified_target[0] - float(verified[0]),
         verified_target[1] - float(verified[1]),

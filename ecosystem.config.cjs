@@ -42,6 +42,10 @@ function pyApp(name, cwdRel) {
       PYTHONUTF8: "1",
       NO_PROXY: NO_PROXY,
       no_proxy: NO_PROXY,
+      CAPTCHA_PROFILE_POOL: "0",
+      CAPTCHA_INJECT_COOKIES_ON_MAIN: "1",
+      CAPTCHA_CHROME_USER_DATA_DIR: path.join(ROOT, "browser_data", "edge_user_profile"),
+      CAPTCHA_PRESERVE_BROWSER_STATE: "1",
     },
     out_file: path.join(LOG, `${name}-out.log`),
     error_file: path.join(LOG, `${name}-err.log`),
@@ -85,6 +89,6 @@ module.exports = {
     // 同时启动 Edge，后启动的那个因单实例机制把命令行转交给前者后立刻退出（表现为
     // 「弹出一个浏览器窗口马上就没了」），调试端口最终没人绑定。
     // 浏览器生命周期统一由 Python 侧管理（它还要在滑块失败后轮换资料池）。
-    // 需要手动开一个调试浏览器时用 scripts\start-chrome-cdp.ps1。
+    // 需要手动开一个调试浏览器时用 scripts\start-edge-cdp.ps1。
   ],
 };

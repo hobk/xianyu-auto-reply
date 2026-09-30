@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import random
+import socket
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -144,8 +145,13 @@ class DrissionPageSliderService:
 
         # 复用本地化用户数据目录（方案 A）
         co.set_user_data_path(self.user_data_dir)
-        # 自动分配调试端口，避免冲突
-        co.set_argument("--remote-debugging-port=0")
+        # DrissionPage 会丢弃 remote-debugging-port 参数并使用 co.address。
+        # 默认 9222 属于常驻 Edge，误连后切换 headless 会重启该浏览器，
+        # 并可能使用过期 WebSocket 地址导致握手 404。显式分配独立端口。
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_socket:
+            port_socket.bind(("127.0.0.1", 0))
+            debug_port = port_socket.getsockname()[1]
+        co.set_local_port(debug_port)
         co.headless(on_off=self.headless)
         co.no_imgs(True)
 

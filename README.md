@@ -117,17 +117,10 @@ xianyu-auto-reply/
 ├── promotion/
 │   ├── backend/          # 返佣后端（端口 8092）
 │   └── frontend/         # 返佣前端（端口 9001）
-├── scripts/              # CI/CD 与工具脚本
+├── scripts/              # 本机启动/停止/CDP 脚本；archive/ 为历史脚本
 ├── docker/frontend/      # 前端 Dockerfile 与 Nginx 配置
 ├── docker-compose.yml    # 本地源码构建编排
-├── deploy.sh             # 一键部署脚本（自动生成远程镜像版 compose）
-├── deploy_remote.sh      # 远程 MySQL/Redis 一键部署脚本（自动生成 docker-compose.remote.yml）
-├── update.sh             # 一键更新脚本（拉取最新远程镜像）
-├── build.sh              # 本地源码全量构建脚本
-├── build_frontend.sh     # 单独构建并重启 Frontend
-├── build_backend_web.sh  # 单独构建并重启 Backend-Web
-├── build_websocket.sh    # 单独构建并重启 WebSocket
-├── build_scheduler.sh    # 单独构建并重启 Scheduler
+├── scripts/archive/      # 历史 Linux 部署、构建、更新与 CI 脚本
 ├── EXE打包构建.bat       # Windows 桌面启动器打包脚本
 ├── 离线依赖打包.bat      # Windows 离线依赖打包脚本
 └── README.md
@@ -158,6 +151,18 @@ xianyu-auto-reply/
 
 ## 快速开始
 
+### Windows 本机源码运行
+
+在当前登录用户的桌面会话中执行：
+
+```powershell
+.\scripts\start-project.ps1
+.\scripts\start-edge-cdp.ps1  # 仅在需要 CDP 真鼠标滑块时执行
+.\scripts\stop-project.ps1
+```
+
+详见 [scripts/README.md](scripts/README.md)。
+
 ### 方式一：服务器一键部署（推荐）
 
 服务器已安装 Docker 与 Docker Compose 后，直接执行一键部署脚本即可：
@@ -179,7 +184,7 @@ curl -fsSL https://xy-update.zhinianboke.com/update.sh | sed 's/\r$//' | bash
 ```bash
 git clone https://github.com/zhinianboke/xianyu-auto-reply.git
 cd xianyu-auto-reply
-bash deploy.sh
+bash scripts/archive/deploy.sh
 ```
 
 - 首次运行会自动生成 `.env` 配置文件和 `docker-compose.deploy.yml`
@@ -193,12 +198,12 @@ bash deploy.sh
 后续更新：
 
 ```bash
-bash update.sh
+bash scripts/archive/update.sh
 ```
 
 ### 方式三：使用远程 MySQL / Redis 部署
 
-当 MySQL 和 Redis 由外部（如云数据库 RDS、独立服务器或已有实例）提供时，可使用 `deploy_remote.sh`。
+当 MySQL 和 Redis 由外部（如云数据库 RDS、独立服务器或已有实例）提供时，可使用 `scripts/archive/deploy_remote.sh`。
 该脚本**不内置 mysql/redis 容器**，仅拉取并启动 4 个应用服务（frontend / backend-web / websocket / scheduler），
 数据库连接信息通过 `.env.remote` 配置。与方式一相同，直接远程拉取脚本执行即可：
 
@@ -214,7 +219,7 @@ vim .env.remote
 curl -fsSL https://xy-update.zhinianboke.com/deploy_remote.sh | sed 's/\r$//' | bash
 ```
 
-> 已克隆仓库的也可改用本地脚本：`bash deploy_remote.sh`（首次生成配置后退出，填好 `.env.remote` 再次执行）。
+> 已克隆仓库的也可改用本地脚本：`bash scripts/archive/deploy_remote.sh`（首次生成配置后退出，填好 `.env.remote` 再次执行）。
 
 - 首次运行自动生成 `.env.remote`，每次运行自动生成 `docker-compose.remote.yml`，均不影响根目录原有的 `.env` / `docker-compose.yml` / `docker-compose.deploy.yml`
 - 容器名与主套保持一致（`xianyu-backend-web` / `xianyu-websocket` / `xianyu-scheduler` / `xianyu-frontend`），与方式二/方式四属于同一套部署，二者只需选其一，不要同时启动
@@ -224,27 +229,27 @@ curl -fsSL https://xy-update.zhinianboke.com/deploy_remote.sh | sed 's/\r$//' | 
 ### 方式四：本地源码 Docker 构建
 
 ```bash
-bash build.sh rebuild
+bash scripts/archive/build.sh rebuild
 ```
 
 常用命令：
 
 | 命令 | 说明 |
 |------|------|
-| `bash build.sh rebuild` | 删除旧容器与镜像，重新构建并启动 |
-| `bash build.sh start` | 启动服务 |
-| `bash build.sh stop` | 停止服务 |
-| `bash build.sh restart` | 重启服务 |
-| `bash build.sh logs` | 查看实时日志 |
-| `bash build.sh status` | 查看服务状态 |
+| `bash scripts/archive/build.sh rebuild` | 删除旧容器与镜像，重新构建并启动 |
+| `bash scripts/archive/build.sh start` | 启动服务 |
+| `bash scripts/archive/build.sh stop` | 停止服务 |
+| `bash scripts/archive/build.sh restart` | 重启服务 |
+| `bash scripts/archive/build.sh logs` | 查看实时日志 |
+| `bash scripts/archive/build.sh status` | 查看服务状态 |
 
 单独重建某个服务（不影响其他服务）：
 
 ```bash
-bash build_frontend.sh      # 重建前端
-bash build_backend_web.sh   # 重建 Backend-Web
-bash build_websocket.sh     # 重建 WebSocket
-bash build_scheduler.sh     # 重建 Scheduler
+bash scripts/archive/build_frontend.sh      # 重建前端
+bash scripts/archive/build_backend_web.sh   # 重建 Backend-Web
+bash scripts/archive/build_websocket.sh     # 重建 WebSocket
+bash scripts/archive/build_scheduler.sh     # 重建 Scheduler
 ```
 
 ### 方式五：源码本地开发
@@ -383,17 +388,17 @@ npm run dev
 
 | 脚本 | 平台 | 作用 |
 |------|------|------|
-| `deploy.sh` | Linux | 生成远程镜像版 compose 并拉取镜像启动（首次部署） |
-| `deploy_remote.sh` | Linux | 使用远程 MySQL/Redis 部署，生成 `docker-compose.remote.yml` 与 `.env.remote` 并启动应用服务 |
-| `update.sh` | Linux | 拉取最新远程镜像并重建应用容器（后续更新） |
-| `build.sh` | Linux | 从源码全量构建所有 Docker 镜像并启动 |
-| `build_frontend.sh` | Linux | 单独重建并重启 Frontend 服务 |
-| `build_backend_web.sh` | Linux | 单独重建并重启 Backend-Web 服务 |
-| `build_websocket.sh` | Linux | 单独重建并重启 WebSocket 服务 |
-| `build_scheduler.sh` | Linux | 单独重建并重启 Scheduler 服务 |
+| `scripts/archive/deploy.sh` | Linux | 生成远程镜像版 compose 并拉取镜像启动（首次部署） |
+| `scripts/archive/deploy_remote.sh` | Linux | 使用远程 MySQL/Redis 部署，生成 `docker-compose.remote.yml` 与 `.env.remote` 并启动应用服务 |
+| `scripts/archive/update.sh` | Linux | 拉取最新远程镜像并重建应用容器（后续更新） |
+| `scripts/archive/build.sh` | Linux | 从源码全量构建所有 Docker 镜像并启动 |
+| `scripts/archive/build_frontend.sh` | Linux | 单独重建并重启 Frontend 服务 |
+| `scripts/archive/build_backend_web.sh` | Linux | 单独重建并重启 Backend-Web 服务 |
+| `scripts/archive/build_websocket.sh` | Linux | 单独重建并重启 WebSocket 服务 |
+| `scripts/archive/build_scheduler.sh` | Linux | 单独重建并重启 Scheduler 服务 |
 | `EXE打包构建.bat` | Windows | 使用 Nuitka 打包桌面启动器 EXE |
 | `离线依赖打包.bat` | Windows | 打包所有 Python 依赖供离线安装 |
-| `scripts/Pipeline脚本-xianyu-auto-reply.groovy` | Jenkins | CI/CD 流水线，构建多架构镜像并推送到阿里云 ACR |
+| `scripts/archive/Pipeline脚本-xianyu-auto-reply.groovy` | Jenkins | CI/CD 流水线，构建多架构镜像并推送到阿里云 ACR |
 
 ## 安全说明
 
@@ -434,8 +439,8 @@ Docker 环境依赖各服务 Dockerfile 内已安装的浏览器。
 
 ```bash
 # 方法一：用 sed 去除 \r 后执行
-sed -i 's/\r$//' deploy.sh
-bash deploy.sh
+sed -i 's/\r$//' scripts/archive/deploy.sh
+bash scripts/archive/deploy.sh
 
 # 方法二：通过管道执行（推荐远程脚本使用）
 curl -fsSL https://xy-update.zhinianboke.com/deploy.sh | sed 's/\r$//' | bash

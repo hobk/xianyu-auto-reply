@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -140,8 +141,16 @@ def get_user_data_dir() -> str:
         logger.warning(f"资料池读取失败，回退固定目录: {e}")
 
     env_dir = (os.environ.get("CAPTCHA_CHROME_USER_DATA_DIR") or "").strip().strip('"')
+    if not env_dir:
+        # Pydantic 读取 .env 不会把其余 CAPTCHA_* 写入 os.environ。
+        # 无进程环境覆盖时，也应使用项目配置而不是静默选中日常默认目录。
+        from dotenv import dotenv_values
+        env_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
+        env_dir = str(dotenv_values(env_file).get("CAPTCHA_CHROME_USER_DATA_DIR") or "").strip().strip('"')
     if env_dir and os.path.isdir(env_dir):
         return env_dir
+    if env_dir:
+        raise RuntimeError(f"配置的浏览器资料目录不存在: {env_dir}")
 
     project_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..")
@@ -328,19 +337,16 @@ def is_cdp_using_expected_profile() -> Tuple[bool, str]:
             return False, "CDP 端口可达但未找到带调试端口的 chrome 主进程命令行"
         return False, "CDP Chrome 未运行"
     for cmd in cmds:
-        # --user-data-dir=... 或 --user-data-dir="..."
-        marker = "--user-data-dir="
-        idx = cmd.lower().find(marker)
-        if idx < 0:
+        # Windows 支持整个参数加引号，也支持只给值加引号。
+        match = re.search(
+            r'"--user-data-dir=([^\"]+)"|--user-data-dir="([^\"]+)"|--user-data-dir=([^\s\"]+)',
+            cmd, re.IGNORECASE,
+        )
+        if not match:
             continue
-        rest = cmd[idx + len(marker) :]
-        if rest.startswith('"'):
-            end = rest.find('"', 1)
-            raw = rest[1:end] if end > 0 else rest[1:]
-        else:
-            raw = rest.split(" ", 1)[0]
+        raw = next(value for value in match.groups() if value is not None)
         actual = _norm_path(raw)
-        if actual == expected or expected in actual or actual in expected:
+        if actual == expected:
             return True, f"CDP 使用干净配置: {actual}"
         return False, f"CDP 配置目录不匹配: 实际={actual} 期望={expected}"
     return False, f"CDP Chrome 命令行无 user-data-dir，期望={expected}"
@@ -508,7 +514,7 @@ def launch_chrome_with_cdp(force: bool = False) -> Tuple[bool, str]:
             )
         logger.info(f"过滑块 {kind} 将使用代理: {proxy_server}")
     else:
-        logger.info(f"过滑块 {kind} 使用本机直连（未配置 CAPTCHA_CHROME_PROXY）")
+        logger.info(f"过滑块 {kind} 沿用浏览器/系统代理设置（未配置 CAPTCHA_CHROME_PROXY）")
 
     logger.info(
         f"启动 CDP {kind}: data={user_data} profile={profile} port={port}"

@@ -287,6 +287,7 @@ class MessageHandler:
                     [_m6_3.get("5", ""), _m6_3.get("1", "")]
                     if isinstance(_m6_3, dict) else []
                 )
+                card_title = self.extract_card_title(message)
                 content_dict = decode_first_content(_candidates)
                 if content_dict is not None:
                     parsed_text, parsed_images, parsed_type = interpret_content(content_dict)
@@ -296,6 +297,12 @@ class MessageHandler:
                     elif parsed_type == "text" and parsed_text:
                         # 用解码出的准确文本（回退保留 reminderContent）
                         reminder_content = parsed_text
+                elif card_title and self._should_prefer_card_title(reminder_content, card_title):
+                    logger.info(
+                        f"【{self.cookie_id}】卡片标题覆盖提醒文案: "
+                        f"{reminder_content} -> {card_title}"
+                    )
+                    reminder_content = card_title
             else:
                 # 卡片消息格式（如评价请求、确认收货等系统卡片）
                 # 结构: {"1": {"1": {"1": "xxx@goofish"}, "2": "xxx@goofish", "6": {"3": {"2": "消息内容"}}}}
@@ -310,6 +317,9 @@ class MessageHandler:
                 message_6 = message_1.get("6", {})
                 message_6_3 = message_6.get("3", {})
                 reminder_content = message_6_3.get("2", "")  # 卡片消息的文本内容
+                card_title = self.extract_card_title(message)
+                if card_title and self._should_prefer_card_title(reminder_content, card_title):
+                    reminder_content = card_title
                 
                 # 卡片消息通常是系统消息，用户名设为"系统"
                 send_user_name = "系统"
@@ -477,6 +487,22 @@ class MessageHandler:
         except Exception:
             pass
         return None
+
+    def _should_prefer_card_title(self, reminder_content: str, card_title: str) -> bool:
+        """判断 dxCard 标题是否比 reminderContent 更适合作为展示/业务文案。"""
+        if not card_title or card_title == reminder_content:
+            return False
+
+        reminder_norm = str(reminder_content or "").strip("[]")
+        title_norm = str(card_title or "").strip("[]")
+        if not title_norm or title_norm == reminder_norm:
+            return False
+
+        card_status_keywords = (
+            "退款", "钱款已原路退返", "已拍下", "已付款",
+            "确认收货", "交易成功", "小刀", "发货",
+        )
+        return any(keyword in reminder_norm or keyword in title_norm for keyword in card_status_keywords)
     
     def is_card_message(self, message: dict) -> bool:
         """判断是否为卡片消息（参照旧框架）"""

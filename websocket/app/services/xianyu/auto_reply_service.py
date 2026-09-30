@@ -78,8 +78,11 @@ class AutoReplyService:
         '我完成了评价',
         # 退款相关消息
         '[退款成功，钱款已原路退返]',
+        '退款成功，钱款已原路退返',
         '[买家申请退款]',
+        '买家申请退款',
         '[卖家同意退款]',
+        '卖家同意退款',
         # 系统提示消息
         '温馨提醒：商品信息近期有过变更',
         '查看商品详情',
@@ -99,6 +102,11 @@ class AutoReplyService:
         '可以送我闲鱼小红花吗',
         '卖家人不错？送Ta闲鱼小红花',
         '你人真不错，送你闲鱼小红花',
+    ]
+
+    SYSTEM_MESSAGES_TO_SKIP_NOTIFY = [
+        '[你已发货]',
+        '你已发货',
     ]
     
     def __init__(self, cookie_id: str, xianyu_instance):
@@ -483,6 +491,12 @@ class AutoReplyService:
                 logger.info(f"【{self.cookie_id}】检测到自动发货触发消息: {send_message}")
                 return True
         return False
+
+    def is_system_message_to_skip_notify(self, send_message: str) -> bool:
+        """检查是否为不需要发送外部通知的系统消息。"""
+        if send_message in self.SYSTEM_MESSAGES_TO_SKIP_NOTIFY:
+            return True
+        return any(skip_msg in send_message for skip_msg in self.SYSTEM_MESSAGES_TO_SKIP_NOTIFY)
     
     def is_rate_request_message(self, send_message: str) -> bool:
         """检查是否为评价请求消息
@@ -702,6 +716,9 @@ class AutoReplyService:
                 logger.info(f"【{self.cookie_id}】系统消息跳过自动回复: {send_message}")
                 log_payload["process_status"] = "skipped"
                 log_payload["decision_reason"] = "system_message"
+                if self.is_system_message_to_skip_notify(send_message):
+                    logger.info(f"【{self.cookie_id}】系统消息跳过通知: {send_message}")
+                    return
                 # 系统消息仍然需要发送通知
                 skip_notify_keywords = await self.get_filter_keywords('skip_notify')
                 should_skip_notification = self.should_skip_notify(send_message, skip_notify_keywords)

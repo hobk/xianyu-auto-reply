@@ -44,6 +44,7 @@ from common.services.captcha.weighted_scheduler import real_mouse_scheduler
 from common.services.captcha import trail_stats
 from common.services.captcha.real_mouse_coordinates import (
     build_geometry_mapper,
+    calibrate_slider_center,
     compute_slider_distance,
 )
 from common.services.captcha.windows_foreground import (
@@ -1115,6 +1116,8 @@ class _RealMouseSolver:
 
         资料池 edge_pool/pN 属于项目隔离资料，返回 False（允许清理）。
         """
+        if os.environ.get("CAPTCHA_PRESERVE_BROWSER_STATE") == "1":
+            return True
         try:
             from common.services.captcha.profile_pool import pool_enabled
             if pool_enabled():
@@ -1814,13 +1817,24 @@ class _RealMouseSolver:
                 if box["x"] <= candidate_x <= box["x"] + box["width"]:
                     mx = candidate_x
         if scene == "business":
+            if not self._ensure_window_foreground(scene):
+                return False
+            # Existing documents/frames may predate add_init_script.
+            self.page.evaluate(_CAP_JS)
+            frame.evaluate(_CAP_JS)
             mapper, geometry = build_geometry_mapper(self.page)
+            calibrated, diagnostics = calibrate_slider_center(self.page, frame, btn, mapper)
             logger.info(
-                f"【{self.pure_id}】业务滑块使用被动窗口几何映射: "
+                f"【{self.pure_id}】业务滑块真实落点校准: ok={calibrated}, "
                 f"dpr={geometry.get('devicePixelRatio')}, "
                 f"窗口=({geometry.get('screenX')},{geometry.get('screenY')}), "
-                f"视口={geometry.get('innerWidth')}x{geometry.get('innerHeight')}"
+                f"视口={geometry.get('innerWidth')}x{geometry.get('innerHeight')}, "
+                f"diagnostics={diagnostics}"
             )
+            if not calibrated:
+                logger.warning(f"【{self.pure_id}】落点校准未通过，取消拖动，避免按到滑块外")
+                return False
+            mx, my = diagnostics["viewport_center"]
             to_screen = mapper.to_screen
         else:
             # 登录滑块保持原 CDP 校准逻辑，不改变 login 的滑动行为。
@@ -1874,6 +1888,15 @@ class _RealMouseSolver:
                 )
                 self._smooth_move_screen(sx, sy, dur=random.uniform(0.05, 0.10))
                 time.sleep(random.uniform(0.05, 0.12))
+                # Do not press if focus/layout changed after calibration.
+                if not self._ensure_window_foreground(scene):
+                    return False
+                if not btn.evaluate("element => element.matches(':hover')"):
+                    logger.warning(
+                        f"【{self.pure_id}】鼠标未命中滑块，取消按下: 屏幕落点=({sx},{sy})"
+                    )
+                    return False
+                logger.info(f"【{self.pure_id}】鼠标已命中滑块，开始按下: 屏幕落点=({sx},{sy})")
                 send_button(True)
                 started = time.perf_counter()
                 press_delay = getattr(replay_drag, "press_delay_ms", 0.0) / 1000.0
@@ -2416,7 +2439,7 @@ def run_real_mouse_verification(
             if cookies == CAPTCHA_NOT_REQUIRED:
                 return True, None
 
-            # 失败：换资料彻底重试一次（仅 CDP + 资料池）
+            # 失败时仅保留原有一次资料轮换，避免多轮失败放大接口耗时。
             try:
                 from common.services.captcha.profile_pool import pool_enabled
                 can_rotate = bool(use_cdp and pool_enabled())
@@ -2426,41 +2449,52 @@ def run_real_mouse_verification(
             if not can_rotate:
                 return False, cookies
 
-            logger.warning(
-                f"【{user_id}】首次滑块失败，切换浏览器资料后重试一次…"
-            )
-            # 轮换与重连必须在 real-mouse 线程内执行，避免跨线程动 Playwright
-            def _rotate_then_retry():
-                _switch_browser_profile_and_reconnect(
-                    user_id, reason=f"first_fail user={user_id}"
-                )
-                # 强制重建 solver（use_cdp 相同也会因浏览器进程已死需要重连）
-                global _shared_solver
-                try:
-                    if _shared_solver is not None:
-                        try:
-                            _shared_solver.close()
-                        except Exception:
-                            pass
-                finally:
-                    _shared_solver = None
-                return _execute_shared_verification(
-                    user_id,
-                    url,
-                    drags,
-                    max(budget, 50),
-                    url_provider,
-                    scene,
-                    use_cdp,
-                    existing_cookies_str or "",
+            # 轮换与重连必须在 real-mouse 线程内执行，避免跨线程动 Playwright。
+            # 限制为一次备用资料尝试。
+            last_cookies = cookies
+            for rotate_attempt in range(1, 2):
+                logger.warning(
+                    f"【{user_id}】第{rotate_attempt}次滑块失败，"
+                    f"切换浏览器资料后重试（资料池轮换 {rotate_attempt}/1）…"
                 )
 
-            ok2, cookies2 = _get_real_mouse_executor().submit(_rotate_then_retry).result()
-            if ok2 and cookies2:
-                logger.info(f"【{user_id}】换资料后重试成功")
-                return True, cookies2
-            logger.warning(f"【{user_id}】换资料后仍失败")
-            return False, cookies2
+                def _rotate_then_retry():
+                    _switch_browser_profile_and_reconnect(
+                        user_id,
+                        reason=f"fail_before_rotate_{rotate_attempt} user={user_id}",
+                    )
+                    global _shared_solver
+                    try:
+                        if _shared_solver is not None:
+                            try:
+                                _shared_solver.close()
+                            except Exception:
+                                pass
+                    finally:
+                        _shared_solver = None
+                    return _execute_shared_verification(
+                        user_id,
+                        url,
+                        drags,
+                        max(budget, 50),
+                        url_provider,
+                        scene,
+                        use_cdp,
+                        existing_cookies_str or "",
+                    )
+
+                ok2, cookies2 = _get_real_mouse_executor().submit(_rotate_then_retry).result()
+                if ok2 and cookies2:
+                    logger.info(
+                        f"【{user_id}】换资料后重试成功（第{rotate_attempt}套资料）"
+                    )
+                    return True, cookies2
+                if cookies2 == URL_EXPIRED:
+                    return False, URL_EXPIRED
+                last_cookies = cookies2
+
+            logger.warning(f"【{user_id}】资料池轮换重试仍失败（已尝试1套备用资料）")
+            return False, last_cookies
         except Exception as e:
             logger.error(f"【{user_id}】{mode_label}引擎执行异常: {e}")
             return False, None

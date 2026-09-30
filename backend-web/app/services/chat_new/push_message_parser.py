@@ -110,6 +110,13 @@ class PushMessageParser:
             if not text_content and not images:
                 text_content = reminder
                 msg_type = "text"
+                card_title = self._extract_card_title(msg_1)
+                if card_title and self._should_prefer_card_title(text_content, card_title):
+                    logger.info(
+                        f"【{self.account_id}】卡片标题覆盖提醒文案: "
+                        f"{text_content} -> {card_title}"
+                    )
+                    text_content = card_title
 
             is_self = sender_id == self.myid
 
@@ -148,6 +155,9 @@ class PushMessageParser:
         try:
             msg_6_3 = msg_6.get("3", {})
             text_content = msg_6_3.get("2", "[卡片消息]")
+            card_title = self._extract_card_title(msg_1)
+            if card_title and self._should_prefer_card_title(text_content, card_title):
+                text_content = card_title
             cid_raw = str(msg_1.get("2", ""))
             cid = cid_raw.split("@")[0] if "@" in cid_raw else cid_raw
             msg_time = msg_1.get("5", 0)
@@ -242,3 +252,40 @@ class PushMessageParser:
             return parse_content_payloads([msg_6_3.get("5", ""), msg_6_3.get("1", "")])
         except Exception:
             return ("", [], "text")
+
+    def _extract_card_title(self, msg_1: dict) -> str:
+        """从 dxCard 载荷中提取卡片标题。"""
+        try:
+            msg_6 = msg_1.get("6", {})
+            msg_6_3 = msg_6.get("3", {}) if isinstance(msg_6, dict) else {}
+            card_json = msg_6_3.get("5", "") if isinstance(msg_6_3, dict) else ""
+            if not card_json:
+                return ""
+            card_content = json.loads(card_json)
+            return str(
+                card_content
+                .get("dxCard", {})
+                .get("item", {})
+                .get("main", {})
+                .get("exContent", {})
+                .get("title", "")
+                or ""
+            )
+        except Exception:
+            return ""
+
+    def _should_prefer_card_title(self, reminder_content: str, card_title: str) -> bool:
+        """判断 dxCard 标题是否比 reminderContent 更适合作为展示文案。"""
+        if not card_title or card_title == reminder_content:
+            return False
+
+        reminder_norm = str(reminder_content or "").strip("[]")
+        title_norm = str(card_title or "").strip("[]")
+        if not title_norm or title_norm == reminder_norm:
+            return False
+
+        card_status_keywords = (
+            "退款", "钱款已原路退返", "已拍下", "已付款",
+            "确认收货", "交易成功", "小刀", "发货",
+        )
+        return any(keyword in reminder_norm or keyword in title_norm for keyword in card_status_keywords)
