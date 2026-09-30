@@ -249,6 +249,7 @@ class WebSocketServiceClient:
                             cookies: str = "", device_id: str = "",
                             extended_queue_timeout: bool = False,
                             precreated_log_id: int | None = None,
+                            request_cookie_base64: str = "",
                             account_row_id: int | None = None,
                             token_user_id: str = "",
                             persist_token_cache: bool = False,
@@ -300,6 +301,7 @@ class WebSocketServiceClient:
                     "cookies": cookies or "",
                     "device_id": device_id or "",
                     "risk_log_id": precreated_log_id,
+                    "request_cookie_base64": request_cookie_base64 or "",
                 }
                 if account_row_id is not None:
                     payload["account_row_id"] = int(account_row_id)

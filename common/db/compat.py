@@ -452,6 +452,7 @@ class DBManagerCompat:
                     processing_status=processing_status,
                     call_type=kwargs.get('call_type', 'local'),
                     call_user=kwargs.get('call_user'),
+                    request_cookie_base64=kwargs.get('request_cookie_base64'),
                 )
                 session.add(log)
                 await session.commit()
@@ -610,6 +611,7 @@ class DBManagerCompat:
                         'captcha_engine': log.captcha_engine,
                         'call_type': log.call_type,
                         'call_user': log.call_user,
+                        'request_cookie_base64': log.request_cookie_base64,
                         'error_message': log.error_message,
                         'created_at': log.created_at.strftime('%Y-%m-%d %H:%M:%S') if log.created_at else None
                     }

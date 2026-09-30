@@ -125,6 +125,7 @@ class RemoteCaptchaAdmissionService:
         account_identifier: str,
         url: str,
         call_user: str | None,
+        request_cookie_base64: str | None = None,
     ) -> tuple[bool, str | None, int | None]:
         """在 Redis 锁内完成准入检查并提交 processing 风控日志。
 
@@ -156,6 +157,7 @@ class RemoteCaptchaAdmissionService:
                 account_identifier=account_identifier,
                 url=url,
                 call_user=call_user,
+                request_cookie_base64=request_cookie_base64,
             )
             return True, None, log_id
         finally:

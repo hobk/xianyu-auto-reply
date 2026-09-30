@@ -9,6 +9,7 @@ WebSocket服务内部API路由
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 
 from fastapi import APIRouter, HTTPException
@@ -134,6 +135,7 @@ class SolveCaptchaRequest(BaseModel):
                                   # 传入后链接过期时可凭此 Cookie 重取新链接继续处理。
     device_id: str = ""           # 可选：设备 ID，配合 cookies 重新请求 token 接口使用
     risk_log_id: int | None = None # backend-web 准入锁内预先创建的风控日志 ID
+    request_cookie_base64: str = "" # 外层保存的原始 Cookie Base64，避免清洗后丢失原文
     token_cache_id: int | None = None # xy_token_cache.id，传入后可写入续期 Token
     token_user_id: str = ""       # Token 缓存用户 ID
     persist_token_cache: bool = False # 是否由 WebSocket 端完成 Token 缓存写入
@@ -409,6 +411,11 @@ async def solve_captcha(request: SolveCaptchaRequest):
     call_type = (request.call_type or "remote").strip() or "remote"
     call_user = (request.call_user or "").strip() or None
     existing_cookies_str = (request.cookies or "").strip()
+    request_cookie_base64 = (request.request_cookie_base64 or "").strip()
+    if not request_cookie_base64 and existing_cookies_str:
+        request_cookie_base64 = base64.b64encode(
+            existing_cookies_str.encode("utf-8")
+        ).decode("ascii")
     device_id = (request.device_id or "").strip()
     refetched_token_result: dict[str, object] = {}
 
@@ -428,6 +435,7 @@ async def solve_captcha(request: SolveCaptchaRequest):
                 processing_status="processing",
                 call_type=call_type,
                 call_user=call_user,
+                request_cookie_base64=request_cookie_base64,
             )
         except Exception as log_e:
             logger.error(f"【过滑块接口】记录风控日志失败: {log_e}")

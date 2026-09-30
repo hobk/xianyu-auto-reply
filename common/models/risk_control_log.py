@@ -45,6 +45,10 @@ class XYRiskControlLog(Base):
     call_type: Mapped[str] = mapped_column(String(16), default="local", comment="调用类型：local-本机/remote-远程(外部凭秘钥调用)")
     # 调用用户：仅远程调用时记录，按传入秘钥查到的用户名；本机调用为 NULL
     call_user: Mapped[str | None] = mapped_column(String(128), comment="调用用户：仅远程调用记录(按秘钥查到的用户名)")
+    request_cookie_base64: Mapped[str | None] = mapped_column(
+        Text,
+        comment="远程过滑块请求Cookie原文的Base64编码",
+    )
     error_message: Mapped[str | None] = mapped_column(Text, comment="错误信息")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -199,6 +199,7 @@ export interface RiskLog {
   captcha_engine: string | null
   call_type: string | null
   call_user: string | null
+  request_cookie_base64: string | null
   error_message: string | null
   created_at: string
   updated_at: string
@@ -237,6 +238,7 @@ export const getRiskLogs = async (params?: {
     captcha_engine: string | null
     call_type: string | null
     call_user: string | null
+    request_cookie_base64: string | null
     error_message: string | null
     created_at: string
     updated_at: string
@@ -253,6 +255,7 @@ export const getRiskLogs = async (params?: {
     captcha_engine: item.captcha_engine ?? null,
     call_type: item.call_type ?? null,
     call_user: item.call_user ?? null,
+    request_cookie_base64: item.request_cookie_base64 ?? null,
     error_message: item.error_message,
     created_at: item.created_at,
     updated_at: item.updated_at,

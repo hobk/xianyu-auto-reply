@@ -47,6 +47,7 @@ class RiskControlLogService:
         account_identifier: str,
         url: str,
         call_user: str | None,
+        request_cookie_base64: str | None = None,
     ) -> int:
         """创建远程滑块 processing 日志并立即提交。"""
         account_row = (
@@ -66,12 +67,39 @@ class RiskControlLogService:
             processing_status="processing",
             call_type="remote",
             call_user=call_user,
+            request_cookie_base64=request_cookie_base64,
         )
         self.session.add(log)
         await self.session.flush()
         log_id = int(log.id)
         await self.session.commit()
         return log_id
+
+    async def mark_remote_slider_no_cookie_rejected(
+        self,
+        *,
+        log_id: int,
+        delay_seconds: float,
+    ) -> bool:
+        """将无 Cookie 的远程请求标记为策略拒绝。"""
+        result = await self.session.execute(
+            update(XYRiskControlLog)
+            .where(
+                XYRiskControlLog.id == log_id,
+                XYRiskControlLog.event_type == "slider_captcha",
+                XYRiskControlLog.processing_status == "processing",
+                XYRiskControlLog.call_type == "remote",
+            )
+            .values(
+                processing_status="failed",
+                processing_result=(
+                    f"无Cookie远程请求已拒绝，延迟 {delay_seconds:.2f} 秒后返回"
+                ),
+                error_message="无Cookie拒绝：调用方未传递Cookie",
+            )
+        )
+        await self.session.commit()
+        return bool(result.rowcount)
 
     async def mark_remote_slider_log_unclaimed(
         self,
@@ -189,6 +217,7 @@ class RiskControlLogService:
                 "captcha_engine": log.captcha_engine,
                 "call_type": log.call_type,
                 "call_user": log.call_user,
+                "request_cookie_base64": log.request_cookie_base64,
                 "error_message": log.error_message,
                 "created_at": safe_isoformat(log.created_at),
                 "updated_at": safe_isoformat(log.updated_at),
@@ -241,11 +270,30 @@ class RiskControlLogService:
             XYRiskControlLog.processing_result.is_(None),
             XYRiskControlLog.processing_result.notlike("%验证链接已过期%"),
         )
+        not_no_cookie_rejected = and_(
+            or_(
+                XYRiskControlLog.error_message.is_(None),
+                XYRiskControlLog.error_message.notin_([
+                    "无Cookie拒绝：调用方未传递Cookie",
+                    "链接超时，请重试或配置Cookie提高成功率",
+                ]),
+            ),
+            or_(
+                XYRiskControlLog.processing_result.is_(None),
+                and_(
+                    XYRiskControlLog.processing_result.notlike("%无Cookie远程请求已拒绝%"),
+                    XYRiskControlLog.processing_result.notlike(
+                        "%链接超时，请重试或配置Cookie提高成功率%"
+                    ),
+                ),
+            ),
+        )
         # 成功率口径：仅统计已出结果的记录，排除处理中（processing）、已取消（cancelled）
         # 与「验证链接已过期」的失败记录
         is_settled = and_(
             XYRiskControlLog.processing_status.notin_(["processing", "cancelled"]),
             not_url_expired,
+            not_no_cookie_rejected,
         )
 
         # 一次查询用条件聚合得到：总数、成功数、远程总数、远程成功数、处理中数、远程处理中数

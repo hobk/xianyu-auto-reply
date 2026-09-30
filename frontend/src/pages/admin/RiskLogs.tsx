@@ -761,6 +761,7 @@ export function RiskLogs() {
                 <th>验证引擎</th>
                 <th>调用类型</th>
                 <th>调用用户</th>
+                <th>Cookie Base64</th>
                 <th>创建时间</th>
                 <th>更新时间</th>
               </tr>
@@ -768,7 +769,7 @@ export function RiskLogs() {
             <tbody>
               {logs.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="text-center py-8 text-slate-500 dark:text-slate-400">
+                  <td colSpan={11} className="text-center py-8 text-slate-500 dark:text-slate-400">
                     <div className="flex flex-col items-center gap-2">
                       <ShieldAlert className="w-12 h-12 text-slate-300 dark:text-slate-600" />
                       <p>暂无风控日志</p>
@@ -862,6 +863,14 @@ export function RiskLogs() {
                     </td>
                     <td className="text-slate-500 dark:text-slate-400 text-sm whitespace-nowrap">
                       {log.call_user || '-'}
+                    </td>
+                    <td className="max-w-[240px] text-slate-500 dark:text-slate-400">
+                      <span
+                        className="block truncate cursor-help font-mono text-xs"
+                        title={log.request_cookie_base64 || ''}
+                      >
+                        {log.request_cookie_base64 || '-'}
+                      </span>
                     </td>
                     <td className="text-slate-500 dark:text-slate-400 text-sm whitespace-nowrap">
                       {new Date(log.created_at).toLocaleString()}

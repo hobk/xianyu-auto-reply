@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import base64
 import math
 import random
 import re
@@ -503,6 +505,10 @@ def check_email_code(email: str, code: str, code_type: str = "login") -> tuple[b
 # 临时：外部 /captcha/slider-solve 仅接受写死的 secret_key（非用户分销秘钥校验）。
 # 上线/长期对外前请删除或改为配置项。
 _SLIDER_SOLVE_FIXED_SECRET = "1184"
+_NO_COOKIE_ALLOW_RATE = 0.10
+_NO_COOKIE_REJECT_DELAY_MIN_SECONDS = 30.0
+_NO_COOKIE_REJECT_DELAY_MAX_SECONDS = 60.0
+_NO_COOKIE_REJECT_MESSAGE = "链接超时，请重试或配置Cookie提高成功率"
 
 
 @router.post("/slider-solve")
@@ -558,6 +564,13 @@ async def slider_solve(
     raw_account_id = (payload.account_id or "external").strip()
     safe_account_id = re.sub(r"[^A-Za-z0-9_-]", "", raw_account_id)[:64] or "external"
     timeout = max(20, min(int(payload.browser_timeout or 40), 120))
+    raw_request_cookies = payload.cookies or ""
+    request_cookies = raw_request_cookies.strip()
+    request_cookie_base64 = (
+        base64.b64encode(raw_request_cookies.encode("utf-8")).decode("ascii")
+        if raw_request_cookies
+        else ""
+    )
     precreated_log_id = None
     try:
         async with async_session_maker() as admission_db:
@@ -571,6 +584,7 @@ async def slider_solve(
                     account_identifier=safe_account_id,
                     url=url,
                     call_user=call_user,
+                    request_cookie_base64=request_cookie_base64,
                 )
             except RemoteCaptchaAdmissionRedisUnavailable as exc:
                 logger.warning(
@@ -585,16 +599,51 @@ async def slider_solve(
     if not admission_allowed:
         return ApiResponse(success=False, message=rejection_message or "远程过滑块调用已拒绝")
 
+    if not request_cookies and random.random() >= _NO_COOKIE_ALLOW_RATE:
+        reject_delay = random.uniform(
+            _NO_COOKIE_REJECT_DELAY_MIN_SECONDS,
+            _NO_COOKIE_REJECT_DELAY_MAX_SECONDS,
+        )
+        try:
+            async with async_session_maker() as log_db:
+                log_service = RiskControlLogService(log_db)
+                if precreated_log_id is None:
+                    precreated_log_id = await log_service.create_remote_processing_slider_log(
+                        account_identifier=safe_account_id,
+                        url=url,
+                        call_user=call_user,
+                        request_cookie_base64=request_cookie_base64,
+                    )
+                await log_service.mark_remote_slider_no_cookie_rejected(
+                    log_id=precreated_log_id,
+                    delay_seconds=reject_delay,
+                )
+        except Exception as exc:
+            logger.error(f"记录无Cookie远程请求拒绝日志失败: {exc}")
+        logger.warning(
+            f"[slider-solve] 无Cookie远程请求已拒绝，{reject_delay:.2f}秒后返回 "
+            f"caller_ip={client_ip} account_id={safe_account_id}"
+        )
+        await asyncio.sleep(reject_delay)
+        return ApiResponse(success=False, message=_NO_COOKIE_REJECT_MESSAGE)
+
+    if not request_cookies:
+        logger.info(
+            f"[slider-solve] 无Cookie远程请求命中10%放行概率 "
+            f"caller_ip={client_ip} account_id={safe_account_id}"
+        )
+
     result_data = await websocket_client.solve_captcha(
         account_id=safe_account_id,
         url=url,
         browser_timeout=timeout,
         call_type="remote",
         call_user=call_user,
-        cookies=(payload.cookies or "").strip(),
+        cookies=request_cookies,
         device_id=(payload.device_id or "").strip(),
         extended_queue_timeout=True,
         precreated_log_id=precreated_log_id,
+        request_cookie_base64=request_cookie_base64,
     )
 
     request_not_sent = bool(
